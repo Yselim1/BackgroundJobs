@@ -332,8 +332,8 @@
         "TYPE": "COMMAND",
         "RETRY": {
           "COUNT": 3,
-          "DELAY_MS": 500,
-          "BACKOFF": "exponential"
+          "DELAY_MS": 200,
+          "BACKOFF": "fixed"
         },
         "STEP_PARAMS": {
           "COMMAND": "node -e \"process.exit(1)\""

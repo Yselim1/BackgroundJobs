@@ -1152,5 +1152,104 @@
     "endTime": "2026-07-13T07:00:11.647Z",
     "durationMs": 5423,
     "error": "Step \"Retry REST API failure\" failed: RESTAPI execution failed: fetch failed"
+  },
+  {
+    "logId": "ccf69889-be2f-4e2d-b1c3-c34d9f478551",
+    "jobId": "retry-test-001",
+    "startTime": "2026-07-14T14:03:27.884Z",
+    "status": "failed",
+    "stepResults": {
+      "550e8400-e29b-41d4-a716-446655440401": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440401",
+        "stepName": "Retry REST API failure",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-14T14:03:27.886Z",
+        "finishedAt": "2026-07-14T14:03:28.837Z",
+        "durationMs": 951,
+        "attempts": [
+          {
+            "attempt": 1,
+            "status": "failed",
+            "startedAt": "2026-07-14T14:03:27.887Z",
+            "finishedAt": "2026-07-14T14:03:28.006Z",
+            "durationMs": 119,
+            "error": "RESTAPI execution failed: request timed out after 1ms."
+          },
+          {
+            "attempt": 2,
+            "status": "failed",
+            "startedAt": "2026-07-14T14:03:28.209Z",
+            "finishedAt": "2026-07-14T14:03:28.212Z",
+            "durationMs": 3,
+            "error": "RESTAPI execution failed: request timed out after 1ms."
+          },
+          {
+            "attempt": 3,
+            "status": "failed",
+            "startedAt": "2026-07-14T14:03:28.420Z",
+            "finishedAt": "2026-07-14T14:03:28.423Z",
+            "durationMs": 3,
+            "error": "RESTAPI execution failed: request timed out after 1ms."
+          },
+          {
+            "attempt": 4,
+            "status": "failed",
+            "startedAt": "2026-07-14T14:03:28.628Z",
+            "finishedAt": "2026-07-14T14:03:28.631Z",
+            "durationMs": 3,
+            "error": "RESTAPI execution failed: request timed out after 1ms."
+          },
+          {
+            "attempt": 5,
+            "status": "failed",
+            "startedAt": "2026-07-14T14:03:28.834Z",
+            "finishedAt": "2026-07-14T14:03:28.837Z",
+            "durationMs": 3,
+            "error": "RESTAPI execution failed: request timed out after 1ms."
+          }
+        ],
+        "error": "RESTAPI execution failed: request timed out after 1ms."
+      },
+      "550e8400-e29b-41d4-a716-446655440402": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440402",
+        "stepName": "Retry command failure",
+        "stepType": "COMMAND",
+        "status": "failed",
+        "startedAt": "2026-07-14T14:03:28.842Z",
+        "finishedAt": "2026-07-14T14:03:29.471Z",
+        "durationMs": 629,
+        "attempts": [
+          {
+            "attempt": 1,
+            "status": "failed",
+            "startedAt": "2026-07-14T14:03:28.842Z",
+            "finishedAt": "2026-07-14T14:03:28.936Z",
+            "durationMs": 94,
+            "error": "COMMAND execution failed. Exit code: 1"
+          },
+          {
+            "attempt": 2,
+            "status": "failed",
+            "startedAt": "2026-07-14T14:03:29.137Z",
+            "finishedAt": "2026-07-14T14:03:29.207Z",
+            "durationMs": 70,
+            "error": "COMMAND execution failed. Exit code: 1"
+          },
+          {
+            "attempt": 3,
+            "status": "failed",
+            "startedAt": "2026-07-14T14:03:29.407Z",
+            "finishedAt": "2026-07-14T14:03:29.471Z",
+            "durationMs": 64,
+            "error": "COMMAND execution failed. Exit code: 1"
+          }
+        ],
+        "error": "COMMAND execution failed. Exit code: 1"
+      }
+    },
+    "endTime": "2026-07-14T14:03:29.472Z",
+    "durationMs": 1588,
+    "error": "Step \"Retry REST API failure\" failed: RESTAPI execution failed: request timed out after 1ms."
   }
 ]

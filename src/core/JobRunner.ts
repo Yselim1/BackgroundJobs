@@ -255,20 +255,18 @@ export class JobRunner {
 
         const retryPolicy = step.RETRY ?? defaultRetry;
 
-        const retryCount = retryPolicy?.COUNT ?? 0;
+        const maxAttempts  = retryPolicy?.COUNT ?? 0;
         const retryDelayMs = retryPolicy?.DELAY_MS ?? 1000;
         const retryBackoff = retryPolicy?.BACKOFF ?? 'fixed';
 
-        const totalAttempts = retryCount + 1;
-
         let lastError: any;
 
-        for (let attempt = 1; attempt <= totalAttempts; attempt++) {
+        for (let attempt = 1; attempt <= maxAttempts ; attempt++) {
             const attemptStartTime = new Date();
 
             try {
                 console.log(
-                    `[JOB_RUNNER] Step "${step.NAME}" attempt ${attempt}/${totalAttempts}`
+                    `[JOB_RUNNER] Step "${step.NAME}" attempt ${attempt}/${maxAttempts}`
                 );
 
                 const output = await executor.execute(step, context);
@@ -298,9 +296,7 @@ export class JobRunner {
                     error: error.message
                 });
 
-                const isLastAttempt = attempt === totalAttempts;
-
-                if (isLastAttempt) {
+                if (attempt === maxAttempts) {
                     break;
                 }
 
