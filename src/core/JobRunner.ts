@@ -1,11 +1,40 @@
 import { randomUUID } from 'node:crypto';
 import { ExecutorRegistry } from '../executors/ExecutorRegistry.js';
-import { type Job, type Step, type JobLog, type RetryPolicy, type RetryBackoff, type StepAttemptLog } from '../types/index.js';
+import { type Job, type Step, type JobLog, type RetryPolicy, type RetryBackoff, type StepAttemptLog, type FailurePolicy } from '../types/index.js';
 
 type StepExecutionResult = {
     stepId: string;
     output: any;
 };
+
+type ResolvedRetryPolicy = {
+    MAX_ATTEMPTS: number;
+    DELAY_MS: number;
+    BACKOFF: RetryBackoff;
+};
+
+type BatchStepResult =
+    | {
+        step: Step;
+        status: 'fulfilled';
+        value: StepExecutionResult;
+    }
+    | {
+        step: Step;
+        status: 'rejected';
+        reason: Error;
+    };
+
+type BatchExecutionResult =
+    | {
+        results: BatchStepResult[];
+        stopRequested: false;
+    }
+    | {
+        results: BatchStepResult[];
+        stopRequested: true;
+        stopReason: Error;
+    };
 
 export class JobRunner {
     
@@ -28,10 +57,16 @@ export class JobRunner {
             const steps = [...job.STEPS].sort((a, b) => a.ORDER - b.ORDER);
 
             this.validateSteps(steps);
+            const failurePolicy = this.resolveFailurePolicy(job.FAILURE_POLICY);
+            const maxConcurrency = this.resolveMaxConcurrency(job.MAX_CONCURRENCY);
 
             const context: Record<string, any> = {};
             const pendingSteps = new Map<string, Step>();
-            const completedSteps = new Set<string>();
+            
+            const successfulSteps = new Set<string>();
+            const unsuccessfulSteps = new Set<string>();
+
+            let firstFailure: Error | undefined;
 
             for (const step of steps) {
                 pendingSteps.set(step.ID, step);
@@ -44,13 +79,25 @@ export class JobRunner {
                     attempts: []
                 };
             }
-            const maxConcurrency = this.resolveMaxConcurrency(job.MAX_CONCURRENCY);
 
             while (pendingSteps.size > 0) {
+                
+                // A step cannot be executed if it has a failed, skipped, or cancelled dependency 
+                // mark these steps as skipped 
+                this.markDependencyBlockedStepsAsSkipped(
+                    pendingSteps,
+                    unsuccessfulSteps,
+                    jobLog
+                )
+
+                if (pendingSteps.size === 0) {
+                    break;
+                }
+
                 // başka bir adıma bağlı olmayan ya da tüm bağlılıkları bitmiş adımların listesini al
                 const runnableSteps = [...pendingSteps.values()].filter(step => {
                     const dependencies = step.DEPENDS_ON ?? [];
-                    return dependencies.every(dependency => completedSteps.has(dependency));
+                    return dependencies.every(dependency => successfulSteps.has(dependency));
                 });
 
                 // bekleyen adımlar var ama hiçbiri çalıştırılamıyor, 
@@ -62,32 +109,53 @@ export class JobRunner {
                         `Circular or unresolved dependency detected. Remaining steps: ${remainingSteps}`
                     );
                 }
-                /*// tüm çalıştırılabilir adımları paralel olarak çalıştır
-                const batchResults = await Promise.allSettled(
-                    runnableSteps.map(step => this.executeStep(step, context, jobLog, job.DEFAULT_RETRY))
-                );*/
+                
 
-                const batchResults = await this.runStepsWithConcurrency(runnableSteps, maxConcurrency,
-                    step => this.executeStep(step, context, jobLog, job.DEFAULT_RETRY)
+                const batchResult = await this.runStepsWithConcurrency(
+                    runnableSteps,
+                    maxConcurrency,
+                    step => this.executeStep(
+                        step,
+                        context,
+                        jobLog,
+                        job.DEFAULT_STEP_RETRY
+                    ),
+                    step => this.shouldStopJobAfterFailure(step, failurePolicy)
                 );
 
-                for (const result of batchResults) {
+                for (const result of batchResult.results) {
+                    pendingSteps.delete(result.step.ID);
+
                     if (result.status === 'fulfilled') {
                         const { stepId, output } = result.value;
 
                         context[stepId] = output;
-                        completedSteps.add(stepId);
-                        pendingSteps.delete(stepId);
+                        successfulSteps.add(stepId);
+                        continue;
                     }
-                }
-                // eğer herhangi bir adım başarısız olduysa tüm iş failler
-                const failedResult = batchResults.find(
-                    result => result.status === 'rejected'
-                );
 
-                if (failedResult && failedResult.status === 'rejected') {
-                    throw failedResult.reason;
+                    unsuccessfulSteps.add(result.step.ID);
+                    firstFailure ??= result.reason;
                 }
+
+                if (batchResult.stopRequested) {
+                    const reason = batchResult.stopReason;
+
+                    this.cancelPendingSteps(
+                        pendingSteps,
+                        unsuccessfulSteps,
+                        jobLog,
+                        `Job cancelled by failure policy: ${reason.message}`
+                    );
+
+                    throw reason;
+                }
+            }
+
+            // continue_independent allows independent work to finish, but the job
+            // still ends as failed if any step exhausted all retry attempts.
+            if (firstFailure) {
+                throw firstFailure;
             }
 
             const jobEndTime = new Date();
@@ -97,13 +165,14 @@ export class JobRunner {
             jobLog.durationMs = jobEndTime.getTime() - jobStartTime.getTime();
 
             return jobLog;
-        } catch (error: any) {
+        } catch (error: unknown) {
             const jobEndTime = new Date();
+            const resolvedError = this.toError(error);
 
             jobLog.status = 'failed';
             jobLog.endTime = jobEndTime.toISOString();
             jobLog.durationMs = jobEndTime.getTime() - jobStartTime.getTime();
-            jobLog.error = error.message;
+            jobLog.error = resolvedError.message;
 
             return jobLog;
         }
@@ -113,7 +182,7 @@ export class JobRunner {
         step: Step,
         context: Record<string, any>,
         jobLog: JobLog,
-        defaultRetry?: RetryPolicy
+        defaultStepRetry?: RetryPolicy
     ): Promise<StepExecutionResult> {
         const stepStartTime = new Date();
 
@@ -135,7 +204,7 @@ export class JobRunner {
                 step,
                 context,
                 jobLog,
-                defaultRetry
+                defaultStepRetry
             );
 
             const stepEndTime = new Date();
@@ -160,9 +229,9 @@ export class JobRunner {
                 stepId: step.ID,
                 output
             };
-        } catch (error: any) {
+        } catch (error: unknown) {
             const stepEndTime = new Date();
-
+            const resolvedError = this.toError(error);
             const attempts = jobLog.stepResults[step.ID]?.attempts ?? [];
 
             jobLog.stepResults[step.ID] = {
@@ -174,12 +243,12 @@ export class JobRunner {
                 finishedAt: stepEndTime.toISOString(),
                 durationMs: stepEndTime.getTime() - stepStartTime.getTime(),
                 attempts,
-                error: error.message
+                error: resolvedError.message
             };
 
-            console.error(`[JOB_RUNNER] Step "${step.NAME}" failed`, error);
+            console.error(`[JOB_RUNNER] Step "${step.NAME}" failed`, resolvedError);
 
-            throw new Error(`Step "${step.NAME}" failed: ${error.message}`);
+            throw new Error(`Step "${step.NAME}" failed: ${resolvedError.message}`);
         }
     }
 
@@ -200,13 +269,22 @@ export class JobRunner {
     private async runStepsWithConcurrency(
         steps: Step[],
         maxConcurrency: number,
-        task: (step: Step) => Promise<StepExecutionResult>
-    ): Promise<PromiseSettledResult<StepExecutionResult>[]> {
-        const results: PromiseSettledResult<StepExecutionResult>[] = [];
+        task: (step: Step) => Promise<StepExecutionResult>,
+        shouldStopAfterFailure: (step: Step) => boolean
+    ): Promise<BatchExecutionResult> {
+        const results: Array<BatchStepResult | undefined> = new Array(steps.length);
         let currentIndex = 0;
+        let stopRequested = false;
+        let stopReason: Error | undefined;
 
         const worker = async (): Promise<void> => {
             while (true) {
+                // Do not take another step after a fail-fast condition occurs.
+                // Steps that were already running are allowed to finish.
+                if (stopRequested) {
+                    return;
+                }
+
                 const index = currentIndex;
                 currentIndex++;
 
@@ -223,15 +301,27 @@ export class JobRunner {
                 try {
                     const value = await task(step);
 
-                    results.push({
+                    results[index] = {
+                        step,
                         status: 'fulfilled',
                         value
-                    });
-                } catch (error) {
-                    results.push({
+                    };
+                } catch (error: unknown) {
+                    const resolvedError = this.toError(error);
+
+                    results[index] = {
+                        step,
                         status: 'rejected',
-                        reason: error
-                    });
+                        reason: resolvedError
+                    };
+
+                    // This is evaluated only after executeStepWithRetry has used all
+                    // remaining attempts. A temporary attempt failure does not stop
+                    // the job.
+                    if (shouldStopAfterFailure(step)) {
+                        stopRequested = true;
+                        stopReason ??= resolvedError;
+                    }
                 }
             }
         };
@@ -242,31 +332,49 @@ export class JobRunner {
             Array.from({ length: workerCount }, () => worker())
         );
 
-        return results;
+        const filteredResults = results.filter((result): result is BatchStepResult => result !== undefined);
+
+        if (stopRequested) {
+            return {
+                results: filteredResults,
+                stopRequested: true,
+                stopReason: stopReason ?? new Error(
+                    'Job stop was requested without a recorded failure.'
+                )
+            };
+        }
+
+        return {
+            results: filteredResults,
+            stopRequested: false
+        };
     }
 
     private async executeStepWithRetry(
         step: Step,
         context: Record<string, any>,
         jobLog: JobLog,
-        defaultRetry?: RetryPolicy
+        defaultStepRetry?: RetryPolicy
     ): Promise<any> {
         const executor = ExecutorRegistry.getExecutor(step.TYPE);
 
-        const retryPolicy = step.RETRY ?? defaultRetry;
+        const retryPolicy = this.resolveStepRetryPolicy(
+            defaultStepRetry,
+            step.RETRY
+        );
 
-        const maxAttempts  = retryPolicy?.COUNT ?? 0;
+        let lastError: Error | undefined;
+
+        const maxAttempts  = retryPolicy?.MAX_ATTEMPTS ?? 0;
         const retryDelayMs = retryPolicy?.DELAY_MS ?? 1000;
         const retryBackoff = retryPolicy?.BACKOFF ?? 'fixed';
 
-        let lastError: any;
-
-        for (let attempt = 1; attempt <= maxAttempts ; attempt++) {
+        for (let attempt = 1; attempt <= retryPolicy.MAX_ATTEMPTS ; attempt++) {
             const attemptStartTime = new Date();
 
             try {
                 console.log(
-                    `[JOB_RUNNER] Step "${step.NAME}" attempt ${attempt}/${maxAttempts}`
+                    `[JOB_RUNNER] Step "${step.NAME}" attempt ${attempt}/${retryPolicy.MAX_ATTEMPTS}`
                 );
 
                 const output = await executor.execute(step, context);
@@ -282,8 +390,8 @@ export class JobRunner {
                 });
 
                 return output;
-            } catch (error: any) {
-                lastError = error;
+            } catch (error: unknown) {
+                lastError = this.toError(error);
 
                 const attemptEndTime = new Date();
 
@@ -293,28 +401,178 @@ export class JobRunner {
                     startedAt: attemptStartTime.toISOString(),
                     finishedAt: attemptEndTime.toISOString(),
                     durationMs: attemptEndTime.getTime() - attemptStartTime.getTime(),
-                    error: error.message
+                    error: lastError.message
                 });
 
-                if (attempt === maxAttempts) {
+                const isLastAttempt = attempt === retryPolicy.MAX_ATTEMPTS;
+
+                if (isLastAttempt) {
                     break;
                 }
 
                 const delayMs = this.calculateRetryDelay(
-                    retryDelayMs,
-                    retryBackoff,
+                    retryPolicy.DELAY_MS,
+                    retryPolicy.BACKOFF,
                     attempt
                 );
 
                 console.warn(
-                    `[JOB_RUNNER] Step "${step.NAME}" attempt ${attempt} failed: ${error.message}. Retrying in ${delayMs}ms...`
+                    `[JOB_RUNNER] Step "${step.NAME}" attempt ${attempt} failed: ${lastError.message}. Retrying in ${delayMs}ms...`
                 );
 
                 await this.sleep(delayMs);
             }
         }
 
-        throw lastError;
+        throw lastError ?? new Error(
+            `Step "${step.NAME}" failed without returning an error.`
+        );
+    }
+
+    private resolveStepRetryPolicy(
+        defaultPolicy?: RetryPolicy,
+        stepPolicy?: RetryPolicy
+    ): ResolvedRetryPolicy {
+        const policy: ResolvedRetryPolicy = {
+            MAX_ATTEMPTS: 1,
+            DELAY_MS: 1000,
+            BACKOFF: 'fixed',
+            ...(defaultPolicy ?? {}),
+            ...(stepPolicy ?? {})
+        };
+
+        if (
+            !Number.isInteger(policy.MAX_ATTEMPTS) ||
+            policy.MAX_ATTEMPTS < 1
+        ) {
+            throw new Error(
+                'Retry MAX_ATTEMPTS must be an integer greater than or equal to 1.'
+            );
+        }
+
+        if (
+            !Number.isFinite(policy.DELAY_MS) ||
+            policy.DELAY_MS < 0
+        ) {
+            throw new Error(
+                'Retry DELAY_MS must be a non-negative finite number.'
+            );
+        }
+
+        if (policy.BACKOFF !== 'fixed' && policy.BACKOFF !== 'exponential') {
+            throw new Error(
+                `Unsupported retry BACKOFF value: ${String(policy.BACKOFF)}`
+            );
+        }
+
+        return policy;
+    }
+    private resolveFailurePolicy(policy?: FailurePolicy): FailurePolicy {
+        if (policy === undefined) {
+            return 'fail_fast';
+        }
+
+        if (policy !== 'fail_fast' && policy !== 'continue_independent') {
+            throw new Error(`Unsupported FAILURE_POLICY value: ${String(policy)}`);
+        }
+
+        return policy;
+    }
+
+    private shouldStopJobAfterFailure(
+        step: Step,
+        jobFailurePolicy: FailurePolicy
+    ): boolean {
+        return (
+            jobFailurePolicy === 'fail_fast' ||
+            step.FAIL_JOB_ON_FAILURE === true
+        );
+    }
+
+    private markDependencyBlockedStepsAsSkipped(
+        pendingSteps: Map<string, Step>,
+        unsuccessfulSteps: Set<string>,
+        jobLog: JobLog
+    ): void {
+        let changed: boolean;
+
+        do {
+            changed = false;
+
+            for (const [stepId, step] of [...pendingSteps.entries()]) {
+                const blockingDependencies = (step.DEPENDS_ON ?? []).filter(
+                    dependency => unsuccessfulSteps.has(dependency)
+                );
+
+                if (blockingDependencies.length === 0) {
+                    continue;
+                }
+
+                this.markStepAsSkipped(
+                    jobLog,
+                    step,
+                    `Skipped because dependencies did not succeed: ${blockingDependencies.join(', ')}`
+                );
+
+                pendingSteps.delete(stepId);
+                unsuccessfulSteps.add(stepId);
+                changed = true;
+            }
+        } while (changed);
+    }
+
+    private cancelPendingSteps(
+        pendingSteps: Map<string, Step>,
+        unsuccessfulSteps: Set<string>,
+        jobLog: JobLog,
+        reason: string
+    ): void {
+        for (const [stepId, step] of pendingSteps) {
+            this.markStepAsCancelled(jobLog, step, reason);
+            unsuccessfulSteps.add(stepId);
+        }
+
+        pendingSteps.clear();
+    }
+
+    private markStepAsSkipped(
+        jobLog: JobLog,
+        step: Step,
+        reason: string
+    ): void {
+        const currentStepLog = jobLog.stepResults[step.ID];
+        const now = new Date();
+
+        jobLog.stepResults[step.ID] = {
+            ...currentStepLog,
+            stepId: step.ID,
+            stepName: step.NAME,
+            stepType: step.TYPE,
+            status: 'skipped',
+            finishedAt: now.toISOString(),
+            attempts: currentStepLog?.attempts ?? [],
+            reason
+        };
+    }
+
+    private markStepAsCancelled(
+        jobLog: JobLog,
+        step: Step,
+        reason: string
+    ): void {
+        const currentStepLog = jobLog.stepResults[step.ID];
+        const now = new Date();
+
+        jobLog.stepResults[step.ID] = {
+            ...currentStepLog,
+            stepId: step.ID,
+            stepName: step.NAME,
+            stepType: step.TYPE,
+            status: 'cancelled',
+            finishedAt: now.toISOString(),
+            attempts: currentStepLog?.attempts ?? [],
+            reason
+        };
     }
 
     private calculateRetryDelay(
@@ -398,6 +656,14 @@ export class JobRunner {
                 attemptLog
             ]
         };
+    }
+    
+    private toError(error: unknown): Error {
+        if (error instanceof Error) {
+            return error;
+        }
+
+        return new Error(String(error));
     }
 
 }

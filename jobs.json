@@ -308,8 +308,8 @@
     "name": "Generic Retry Test Job",
     "schedule": "*/5 * * * *",
     "MAX_CONCURRENCY": 1,
-    "DEFAULT_RETRY": {
-      "COUNT": 5,
+    "DEFAULT_STEP_RETRY": {
+      "MAX_ATTEMPTS": 5,
       "DELAY_MS": 200,
       "BACKOFF": "fixed"
     },
@@ -331,7 +331,7 @@
         "NAME": "Retry command failure",
         "TYPE": "COMMAND",
         "RETRY": {
-          "COUNT": 3,
+          "MAX_ATTEMPTS": 3,
           "DELAY_MS": 200,
           "BACKOFF": "fixed"
         },
