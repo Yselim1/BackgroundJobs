@@ -341,5 +341,384 @@
       }
     ],
     "status": "active"
-  }
+  },
+  {
+  "id": "test-fail-fast-sequential",
+  "name": "Fail Fast Sequential Test",
+  "schedule": "*/5 * * * *",
+  "MAX_CONCURRENCY": 1,
+  "FAILURE_POLICY": "fail_fast",
+  "DEFAULT_STEP_RETRY": {
+    "MAX_ATTEMPTS": 3,
+    "DELAY_MS": 200,
+    "BACKOFF": "fixed"
+  },
+  "STEPS": [
+    {
+      "ORDER": 1,
+      "ID": "ff-rest-failure",
+      "NAME": "REST failure",
+      "TYPE": "RESTAPI",
+      "STEP_PARAMS": {
+        "URL": "https://httpbin.org/status/200",
+        "METHOD": "GET",
+        "TIMEOUT_MS": 1
+      }
+    },
+    {
+      "ORDER": 2,
+      "ID": "ff-command-success",
+      "NAME": "Command that should be cancelled",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"console.log('This should not run')\""
+      }
+    }
+  ],
+  "status": "active"
+ },
+ {
+  "id": "test-continue-independent",
+  "name": "Continue Independent Test",
+  "schedule": "*/5 * * * *",
+  "MAX_CONCURRENCY": 2,
+  "FAILURE_POLICY": "continue_independent",
+  "DEFAULT_STEP_RETRY": {
+    "MAX_ATTEMPTS": 2,
+    "DELAY_MS": 100,
+    "BACKOFF": "fixed"
+  },
+  "STEPS": [
+    {
+      "ORDER": 1,
+      "ID": "ci-rest-failure",
+      "NAME": "Failing REST step",
+      "TYPE": "RESTAPI",
+      "STEP_PARAMS": {
+        "URL": "https://httpbin.org/status/500",
+        "METHOD": "GET",
+        "TIMEOUT_MS": 5000
+      }
+    },
+    {
+      "ORDER": 2,
+      "ID": "ci-independent-command",
+      "NAME": "Independent successful command",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"console.log('Independent step completed')\""
+      }
+    },
+    {
+      "ORDER": 3,
+      "ID": "ci-dependent-command",
+      "NAME": "Dependent step that should be skipped",
+      "TYPE": "COMMAND",
+      "DEPENDS_ON": [
+        "ci-rest-failure"
+      ],
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"console.log('This should not run')\""
+      }
+    }
+  ],
+  "status": "active"
+ },
+ {
+  "id": "test-critical-step-failure",
+  "name": "Critical Step Failure Test",
+  "schedule": "*/5 * * * *",
+  "MAX_CONCURRENCY": 1,
+  "FAILURE_POLICY": "continue_independent",
+  "DEFAULT_STEP_RETRY": {
+    "MAX_ATTEMPTS": 2,
+    "DELAY_MS": 100,
+    "BACKOFF": "fixed"
+  },
+  "STEPS": [
+    {
+      "ORDER": 1,
+      "ID": "critical-rest-step",
+      "NAME": "Critical REST failure",
+      "TYPE": "RESTAPI",
+      "FAIL_JOB_ON_FAILURE": true,
+      "RETRY": {
+        "MAX_ATTEMPTS": 3,
+        "DELAY_MS": 200,
+        "BACKOFF": "fixed"
+      },
+      "STEP_PARAMS": {
+        "URL": "https://httpbin.org/status/500",
+        "METHOD": "GET",
+        "TIMEOUT_MS": 5000
+      }
+    },
+    {
+      "ORDER": 2,
+      "ID": "critical-pending-command",
+      "NAME": "Command cancelled by critical failure",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"console.log('This should be cancelled')\""
+      }
+    }
+  ],
+  "status": "active"
+ },
+ {
+  "id": "test-partial-retry-merge",
+  "name": "Partial Retry Override Merge Test",
+  "schedule": "*/5 * * * *",
+  "MAX_CONCURRENCY": 1,
+  "FAILURE_POLICY": "continue_independent",
+  "DEFAULT_STEP_RETRY": {
+    "MAX_ATTEMPTS": 5,
+    "DELAY_MS": 300,
+    "BACKOFF": "exponential"
+  },
+  "STEPS": [
+    {
+      "ORDER": 1,
+      "ID": "partial-retry-command",
+      "NAME": "Partial retry override command",
+      "TYPE": "COMMAND",
+      "RETRY": {
+        "MAX_ATTEMPTS": 3
+      },
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"process.exit(1)\""
+      }
+    }
+  ],
+  "status": "active"
+ },
+ {
+  "id": "test-eventual-retry-success",
+  "name": "Eventual Retry Success Test",
+  "schedule": "*/5 * * * *",
+  "MAX_CONCURRENCY": 1,
+  "FAILURE_POLICY": "fail_fast",
+  "DEFAULT_STEP_RETRY": {
+    "MAX_ATTEMPTS": 5,
+    "DELAY_MS": 200,
+    "BACKOFF": "fixed"
+  },
+  "STEPS": [
+    {
+      "ORDER": 1,
+      "ID": "eventual-success-command",
+      "NAME": "Command succeeds on third attempt",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"const fs=require('fs');const p='.retry-test-eventual-success';let count=fs.existsSync(p)?Number(fs.readFileSync(p,'utf8')):0;count++;if(count<3){fs.writeFileSync(p,String(count));process.exit(1);}if(fs.existsSync(p))fs.unlinkSync(p);console.log('Succeeded on attempt '+count);\""
+      }
+    },
+    {
+      "ORDER": 2,
+      "ID": "after-eventual-success",
+      "NAME": "Runs after retry succeeds",
+      "TYPE": "COMMAND",
+      "DEPENDS_ON": [
+        "eventual-success-command"
+      ],
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"console.log('Dependency succeeded')\""
+      }
+    }
+  ],
+  "status": "active"
+ },
+ {
+  "id": "test-multiple-dependencies",
+  "name": "Multiple Dependencies Test",
+  "schedule": "*/5 * * * *",
+  "MAX_CONCURRENCY": 2,
+  "FAILURE_POLICY": "continue_independent",
+  "DEFAULT_STEP_RETRY": {
+    "MAX_ATTEMPTS": 2,
+    "DELAY_MS": 100,
+    "BACKOFF": "fixed"
+  },
+  "STEPS": [
+    {
+      "ORDER": 1,
+      "ID": "dependency-a-success",
+      "NAME": "Dependency A succeeds",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"console.log('Dependency A completed')\""
+      }
+    },
+    {
+      "ORDER": 2,
+      "ID": "dependency-b-failure",
+      "NAME": "Dependency B fails",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"process.exit(1)\""
+      }
+    },
+    {
+      "ORDER": 3,
+      "ID": "multiple-dependent-step",
+      "NAME": "Requires both dependencies",
+      "TYPE": "COMMAND",
+      "DEPENDS_ON": [
+        "dependency-a-success",
+        "dependency-b-failure"
+      ],
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"console.log('This should be skipped')\""
+      }
+    },
+    {
+      "ORDER": 4,
+      "ID": "independent-cleanup",
+      "NAME": "Independent cleanup",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"console.log('Independent cleanup completed')\""
+      }
+    }
+  ],
+  "status": "active"
+ },
+ {
+  "id": "test-fail-fast-concurrent",
+  "name": "Fail Fast Concurrent Test",
+  "schedule": "*/5 * * * *",
+  "MAX_CONCURRENCY": 3,
+  "FAILURE_POLICY": "fail_fast",
+  "DEFAULT_STEP_RETRY": {
+    "MAX_ATTEMPTS": 1,
+    "DELAY_MS": 100,
+    "BACKOFF": "fixed"
+  },
+  "STEPS": [
+    {
+      "ORDER": 1,
+      "ID": "concurrent-slow-success-a",
+      "NAME": "Slow successful command A",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"setTimeout(()=>console.log('A completed'),1000)\""
+      }
+    },
+    {
+      "ORDER": 2,
+      "ID": "concurrent-fast-failure",
+      "NAME": "Fast failing command",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"process.exit(1)\""
+      }
+    },
+    {
+      "ORDER": 3,
+      "ID": "concurrent-slow-success-b",
+      "NAME": "Slow successful command B",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"setTimeout(()=>console.log('B completed'),1000)\""
+      }
+    },
+    {
+      "ORDER": 4,
+      "ID": "concurrent-pending-command",
+      "NAME": "Pending command that should be cancelled",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"console.log('This should not start')\""
+      }
+    }
+  ],
+  "status": "active"
+ },
+ {
+  "id": "test-fail-fast-concurrent-2",
+  "name": "Fail Fast Concurrent Test",
+  "schedule": "*/5 * * * *",
+  "MAX_CONCURRENCY": 2,
+  "FAILURE_POLICY": "fail_fast",
+  "DEFAULT_STEP_RETRY": {
+    "MAX_ATTEMPTS": 1,
+    "DELAY_MS": 100,
+    "BACKOFF": "fixed"
+  },
+  "STEPS": [
+    {
+      "ORDER": 1,
+      "ID": "concurrent-slow-success-a",
+      "NAME": "Slow successful command A",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"setTimeout(()=>console.log('A completed'),1000)\""
+      }
+    },
+    {
+      "ORDER": 2,
+      "ID": "concurrent-fast-failure",
+      "NAME": "Fast failing command",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"process.exit(1)\""
+      }
+    },
+    {
+      "ORDER": 3,
+      "ID": "concurrent-slow-success-b",
+      "NAME": "Slow successful command B",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"setTimeout(()=>console.log('B completed'),1000)\""
+      }
+    },
+    {
+      "ORDER": 4,
+      "ID": "concurrent-pending-command",
+      "NAME": "Pending command that should be cancelled",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"console.log('This should not start')\""
+      }
+    }
+  ],
+  "status": "active"
+ },
+ {
+  "id": "test-disable-step-retries",
+  "name": "Disable Step Retries Test",
+  "schedule": "*/5 * * * *",
+  "MAX_CONCURRENCY": 1,
+  "FAILURE_POLICY": "continue_independent",
+  "DEFAULT_STEP_RETRY": {
+    "MAX_ATTEMPTS": 4,
+    "DELAY_MS": 200,
+    "BACKOFF": "fixed"
+  },
+  "STEPS": [
+    {
+      "ORDER": 1,
+      "ID": "single-attempt-command",
+      "NAME": "Command with no retries",
+      "TYPE": "COMMAND",
+      "RETRY": {
+        "MAX_ATTEMPTS": 1
+      },
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"process.exit(1)\""
+      }
+    },
+    {
+      "ORDER": 2,
+      "ID": "continues-after-single-attempt",
+      "NAME": "Independent successful command",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"console.log('Continued after failure')\""
+      }
+    }
+  ],
+  "status": "active"
+ }
 ]
