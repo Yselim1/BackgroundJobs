@@ -1,0 +1,1156 @@
+[
+  {
+    "logId": "631696ac-bd4f-476f-8162-21534341b1b9",
+    "jobId": "dag-test-001",
+    "startTime": "2026-07-07T19:38:31.953Z",
+    "status": "success",
+    "stepResults": {
+      "fetch-cat-fact": {
+        "stepId": "fetch-cat-fact",
+        "stepName": "Fetch cat fact",
+        "stepType": "RESTAPI",
+        "status": "success",
+        "startedAt": "2026-07-07T19:38:31.954Z",
+        "finishedAt": "2026-07-07T19:38:32.652Z",
+        "durationMs": 698,
+        "output": {
+          "status": 200,
+          "data": {
+            "fact": "Retractable claws are a physical phenomenon that sets cats apart from the rest of the animal kingdom. I n the cat family, only cheetahs cannot retract their claws.",
+            "length": 163
+          }
+        }
+      },
+      "fetch-random-user": {
+        "stepId": "fetch-random-user",
+        "stepName": "Fetch random user",
+        "stepType": "RESTAPI",
+        "status": "success",
+        "startedAt": "2026-07-07T19:38:32.020Z",
+        "finishedAt": "2026-07-07T19:38:32.459Z",
+        "durationMs": 439,
+        "output": {
+          "status": 200,
+          "data": {
+            "results": [
+              {
+                "gender": "male",
+                "name": {
+                  "title": "Mr",
+                  "first": "Holm",
+                  "last": "Göhler"
+                },
+                "location": {
+                  "street": {
+                    "number": 4486,
+                    "name": "Parkstraße"
+                  },
+                  "city": "Leonberg",
+                  "state": "Nordrhein-Westfalen",
+                  "country": "Germany",
+                  "postcode": 89006,
+                  "coordinates": {
+                    "latitude": "-51.5377",
+                    "longitude": "-53.9619"
+                  },
+                  "timezone": {
+                    "offset": "+3:30",
+                    "description": "Tehran"
+                  }
+                },
+                "email": "holm.gohler@example.com",
+                "login": {
+                  "uuid": "7497b79e-253c-47f1-b1d6-b756f4ff5b96",
+                  "username": "ticklishgoose745",
+                  "password": "albany",
+                  "salt": "jwlUB9eo",
+                  "md5": "88ea72f5341b113caabda643f25d2d58",
+                  "sha1": "0beaa7e693dbecd5657332bbce641993e8783ca4",
+                  "sha256": "15115cec700f23e193532796841a74d53276d154f3eac3ded634205f7603b29e"
+                },
+                "dob": {
+                  "date": "1971-04-29T10:43:41.822Z",
+                  "age": 55
+                },
+                "registered": {
+                  "date": "2009-08-11T18:13:40.825Z",
+                  "age": 16
+                },
+                "phone": "0929-9375467",
+                "cell": "0177-1867278",
+                "id": {
+                  "name": "SVNR",
+                  "value": "77 290471 G 218"
+                },
+                "picture": {
+                  "large": "https://randomuser.me/api/portraits/men/38.jpg",
+                  "medium": "https://randomuser.me/api/portraits/med/men/38.jpg",
+                  "thumbnail": "https://randomuser.me/api/portraits/thumb/men/38.jpg"
+                },
+                "nat": "DE"
+              }
+            ],
+            "info": {
+              "seed": "c6e23beb1ae6a568",
+              "results": 1,
+              "page": 1,
+              "version": "1.4"
+            }
+          }
+        }
+      },
+      "parse-cat-fact": {
+        "stepId": "parse-cat-fact",
+        "stepName": "Parse cat fact",
+        "stepType": "SCRIPT",
+        "status": "success",
+        "startedAt": "2026-07-07T19:38:32.652Z",
+        "finishedAt": "2026-07-07T19:38:32.655Z",
+        "durationMs": 3,
+        "output": {
+          "fact": "Retractable claws are a physical phenomenon that sets cats apart from the rest of the animal kingdom. I n the cat family, only cheetahs cannot retract their claws.",
+          "length": 163
+        }
+      },
+      "parse-random-user": {
+        "stepId": "parse-random-user",
+        "stepName": "Parse random user",
+        "stepType": "SCRIPT",
+        "status": "success",
+        "startedAt": "2026-07-07T19:38:32.654Z",
+        "finishedAt": "2026-07-07T19:38:32.655Z",
+        "durationMs": 1,
+        "output": {
+          "fullName": "Holm Göhler",
+          "email": "holm.gohler@example.com"
+        }
+      },
+      "combine-results": {
+        "stepId": "combine-results",
+        "stepName": "Combine results",
+        "stepType": "SCRIPT",
+        "status": "success",
+        "startedAt": "2026-07-07T19:38:32.655Z",
+        "finishedAt": "2026-07-07T19:38:32.657Z",
+        "durationMs": 2,
+        "output": {
+          "catFact": "Retractable claws are a physical phenomenon that sets cats apart from the rest of the animal kingdom. I n the cat family, only cheetahs cannot retract their claws.",
+          "user": "Holm Göhler"
+        }
+      }
+    },
+    "endTime": "2026-07-07T19:38:32.657Z",
+    "durationMs": 704
+  },
+  {
+    "logId": "3263bad3-a5e2-4c76-a36f-8263084412e7",
+    "jobId": "Url-test-001",
+    "startTime": "2026-07-07T21:19:32.362Z",
+    "status": "failed",
+    "stepResults": {
+      "550e8400-e29b-41d4-a716-446655440101": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440101",
+        "stepName": "Timeout test request",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-07T21:19:32.366Z",
+        "finishedAt": "2026-07-07T21:19:34.381Z",
+        "durationMs": 2015,
+        "error": "RESTAPI execution failed: request timed out after 2000ms."
+      },
+      "550e8400-e29b-41d4-a716-446655440102": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440102",
+        "stepName": "Invalid domain test",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-07T21:19:32.517Z",
+        "finishedAt": "2026-07-07T21:19:32.645Z",
+        "durationMs": 128,
+        "error": "RESTAPI execution failed: fetch failed"
+      },
+      "550e8400-e29b-41d4-a716-446655440103": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440103",
+        "stepName": "Invalid URL format test",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-07T21:19:32.520Z",
+        "finishedAt": "2026-07-07T21:19:32.526Z",
+        "durationMs": 6,
+        "error": "RESTAPI execution failed: Failed to parse URL from not-a-valid-url"
+      },
+      "550e8400-e29b-41d4-a716-446655440104": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440104",
+        "stepName": "HTTP 404 test",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-07T21:19:32.520Z",
+        "finishedAt": "2026-07-07T21:19:33.283Z",
+        "durationMs": 763,
+        "error": "RESTAPI execution failed: RESTAPI request failed with status 404: \"\""
+      },
+      "550e8400-e29b-41d4-a716-446655440105": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440105",
+        "stepName": "HTTP 500 test",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-07T21:19:32.523Z",
+        "finishedAt": "2026-07-07T21:19:33.396Z",
+        "durationMs": 873,
+        "error": "RESTAPI execution failed: RESTAPI request failed with status 500: \"\""
+      }
+    },
+    "endTime": "2026-07-07T21:19:34.382Z",
+    "durationMs": 2020,
+    "error": "Step \"Timeout test request\" failed: RESTAPI execution failed: request timed out after 2000ms."
+  },
+  {
+    "logId": "07d25f5b-5965-4ac0-a07c-dcf3c6c73e08",
+    "jobId": "Url-test-001",
+    "startTime": "2026-07-07T21:19:58.693Z",
+    "status": "failed",
+    "stepResults": {
+      "550e8400-e29b-41d4-a716-446655440101": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440101",
+        "stepName": "Timeout test request",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-07T21:19:58.694Z",
+        "finishedAt": "2026-07-07T21:20:00.700Z",
+        "durationMs": 2006,
+        "error": "RESTAPI execution failed: request timed out after 2000ms."
+      },
+      "550e8400-e29b-41d4-a716-446655440102": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440102",
+        "stepName": "Invalid domain test",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-07T21:19:58.696Z",
+        "finishedAt": "2026-07-07T21:19:58.707Z",
+        "durationMs": 11,
+        "error": "RESTAPI execution failed: fetch failed"
+      },
+      "550e8400-e29b-41d4-a716-446655440103": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440103",
+        "stepName": "Invalid URL format test",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-07T21:19:58.699Z",
+        "finishedAt": "2026-07-07T21:19:58.705Z",
+        "durationMs": 6,
+        "error": "RESTAPI execution failed: Failed to parse URL from not-a-valid-url"
+      },
+      "550e8400-e29b-41d4-a716-446655440104": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440104",
+        "stepName": "HTTP 404 test",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-07T21:19:58.700Z",
+        "finishedAt": "2026-07-07T21:19:59.245Z",
+        "durationMs": 545,
+        "error": "RESTAPI execution failed: RESTAPI request failed with status 404: \"\""
+      },
+      "550e8400-e29b-41d4-a716-446655440105": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440105",
+        "stepName": "HTTP 500 test",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-07T21:19:58.702Z",
+        "finishedAt": "2026-07-07T21:19:59.248Z",
+        "durationMs": 546,
+        "error": "RESTAPI execution failed: RESTAPI request failed with status 500: \"\""
+      }
+    },
+    "endTime": "2026-07-07T21:20:00.701Z",
+    "durationMs": 2008,
+    "error": "Step \"Timeout test request\" failed: RESTAPI execution failed: request timed out after 2000ms."
+  },
+  {
+    "logId": "8fa47b9f-0917-4354-b76d-a85977b56d60",
+    "jobId": "retry-test-001",
+    "startTime": "2026-07-08T15:57:59.331Z",
+    "status": "failed",
+    "stepResults": {
+      "550e8400-e29b-41d4-a716-446655440401": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440401",
+        "stepName": "Retry REST API failure",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-08T15:57:59.333Z",
+        "finishedAt": "2026-07-08T15:58:02.991Z",
+        "durationMs": 3658,
+        "error": "RESTAPI execution failed: RESTAPI request failed with status 500: \"\""
+      },
+      "550e8400-e29b-41d4-a716-446655440402": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440402",
+        "stepName": "Retry command failure",
+        "stepType": "COMMAND",
+        "status": "success",
+        "startedAt": "2026-07-08T15:57:59.436Z",
+        "finishedAt": "2026-07-08T15:57:59.436Z",
+        "durationMs": 0,
+        "output": {
+          "status": "simulated_success"
+        }
+      }
+    },
+    "endTime": "2026-07-08T15:58:02.994Z",
+    "durationMs": 3663,
+    "error": "Step \"Retry REST API failure\" failed: RESTAPI execution failed: RESTAPI request failed with status 500: \"\""
+  },
+  {
+    "logId": "07b1aeb3-6f5a-4567-a079-de6228fb13ed",
+    "jobId": "retry-test-001",
+    "startTime": "2026-07-08T16:02:10.345Z",
+    "status": "failed",
+    "stepResults": {
+      "550e8400-e29b-41d4-a716-446655440401": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440401",
+        "stepName": "Retry REST API failure",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-08T16:02:10.346Z",
+        "finishedAt": "2026-07-08T16:02:14.839Z",
+        "durationMs": 4493,
+        "error": "RESTAPI execution failed: RESTAPI request failed with status 500: \"\""
+      },
+      "550e8400-e29b-41d4-a716-446655440402": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440402",
+        "stepName": "Retry command failure",
+        "stepType": "COMMAND",
+        "status": "failed",
+        "startedAt": "2026-07-08T16:02:10.408Z",
+        "finishedAt": "2026-07-08T16:02:14.194Z",
+        "durationMs": 3786,
+        "error": "COMMAND execution failed. Exit code: 1"
+      }
+    },
+    "endTime": "2026-07-08T16:02:14.840Z",
+    "durationMs": 4495,
+    "error": "Step \"Retry REST API failure\" failed: RESTAPI execution failed: RESTAPI request failed with status 500: \"\""
+  },
+  {
+    "logId": "0704596e-fd8c-4178-b11a-034af98c8ba5",
+    "jobId": "command-test-001",
+    "startTime": "2026-07-08T16:03:54.489Z",
+    "status": "failed",
+    "stepResults": {
+      "echo-step": {
+        "stepId": "echo-step",
+        "stepName": "Echo Command",
+        "stepType": "COMMAND",
+        "status": "success",
+        "startedAt": "2026-07-08T16:03:54.489Z",
+        "finishedAt": "2026-07-08T16:03:54.513Z",
+        "durationMs": 24,
+        "output": {
+          "exitCode": 0,
+          "stdout": "'Hello, World!'",
+          "stderr": ""
+        }
+      },
+      "failing-command-step": {
+        "stepId": "failing-command-step",
+        "stepName": "Failing Command",
+        "stepType": "COMMAND",
+        "status": "failed",
+        "startedAt": "2026-07-08T16:03:54.501Z",
+        "finishedAt": "2026-07-08T16:03:54.564Z",
+        "durationMs": 63,
+        "error": "COMMAND execution failed. Exit code: 1"
+      }
+    },
+    "endTime": "2026-07-08T16:03:54.565Z",
+    "durationMs": 76,
+    "error": "Step \"Failing Command\" failed: COMMAND execution failed. Exit code: 1"
+  },
+  {
+    "logId": "7159c733-9f02-4e34-8014-88021631cd1d",
+    "jobId": "command-test-001",
+    "startTime": "2026-07-08T19:06:56.782Z",
+    "status": "failed",
+    "stepResults": {
+      "echo-step": {
+        "stepId": "echo-step",
+        "stepName": "Echo Command",
+        "stepType": "COMMAND",
+        "status": "success",
+        "startedAt": "2026-07-08T19:06:56.785Z",
+        "finishedAt": "2026-07-08T19:06:56.810Z",
+        "durationMs": 25,
+        "output": {
+          "exitCode": 0,
+          "stdout": "'Hello, World!'",
+          "stderr": ""
+        }
+      },
+      "failing-command-step": {
+        "stepId": "failing-command-step",
+        "stepName": "Failing Command",
+        "stepType": "COMMAND",
+        "status": "failed",
+        "startedAt": "2026-07-08T19:06:56.798Z",
+        "finishedAt": "2026-07-08T19:06:56.868Z",
+        "durationMs": 70,
+        "error": "COMMAND execution failed. Exit code: 1"
+      }
+    },
+    "endTime": "2026-07-08T19:06:56.871Z",
+    "durationMs": 89,
+    "error": "Step \"Failing Command\" failed: COMMAND execution failed. Exit code: 1"
+  },
+  {
+    "logId": "1a3e91e4-6542-4c54-a4a1-45d3df413912",
+    "jobId": "cron-004",
+    "startTime": "2026-07-08T19:29:45.487Z",
+    "status": "failed",
+    "stepResults": {},
+    "endTime": "2026-07-08T19:29:45.488Z",
+    "durationMs": 1,
+    "error": "Step validation failed: ID is required."
+  },
+  {
+    "logId": "42595b71-bfc3-46aa-9eed-097e5d96cd9a",
+    "jobId": "Url-test-001",
+    "startTime": "2026-07-08T19:30:19.932Z",
+    "status": "failed",
+    "stepResults": {
+      "550e8400-e29b-41d4-a716-446655440101": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440101",
+        "stepName": "Timeout test request",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-08T19:30:19.933Z",
+        "finishedAt": "2026-07-08T19:30:21.944Z",
+        "durationMs": 2011,
+        "error": "RESTAPI execution failed: request timed out after 2000ms."
+      },
+      "550e8400-e29b-41d4-a716-446655440102": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440102",
+        "stepName": "Invalid domain test",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-08T19:30:20.032Z",
+        "finishedAt": "2026-07-08T19:30:20.116Z",
+        "durationMs": 84,
+        "error": "RESTAPI execution failed: fetch failed"
+      },
+      "550e8400-e29b-41d4-a716-446655440103": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440103",
+        "stepName": "Invalid URL format test",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-08T19:30:20.034Z",
+        "finishedAt": "2026-07-08T19:30:20.038Z",
+        "durationMs": 4,
+        "error": "RESTAPI execution failed: Failed to parse URL from not-a-valid-url"
+      },
+      "550e8400-e29b-41d4-a716-446655440104": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440104",
+        "stepName": "HTTP 404 test",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-08T19:30:20.035Z",
+        "finishedAt": "2026-07-08T19:30:20.842Z",
+        "durationMs": 807,
+        "error": "RESTAPI execution failed: RESTAPI request failed with status 404: \"\""
+      },
+      "550e8400-e29b-41d4-a716-446655440105": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440105",
+        "stepName": "HTTP 500 test",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-08T19:30:20.036Z",
+        "finishedAt": "2026-07-08T19:30:21.127Z",
+        "durationMs": 1091,
+        "error": "RESTAPI execution failed: RESTAPI request failed with status 500: \"\""
+      }
+    },
+    "endTime": "2026-07-08T19:30:21.944Z",
+    "durationMs": 2012,
+    "error": "Step \"Invalid URL format test\" failed: RESTAPI execution failed: Failed to parse URL from not-a-valid-url"
+  },
+  {
+    "logId": "34e89631-1954-4ff7-87e0-2725b191b34b",
+    "jobId": "cron-004",
+    "startTime": "2026-07-08T19:31:09.100Z",
+    "status": "failed",
+    "stepResults": {},
+    "endTime": "2026-07-08T19:31:09.101Z",
+    "durationMs": 1,
+    "error": "Step validation failed: ID is required."
+  },
+  {
+    "logId": "cc50ae42-d504-4899-a15d-fc6ee87a75cc",
+    "jobId": "cron-004",
+    "startTime": "2026-07-08T19:31:50.248Z",
+    "status": "failed",
+    "stepResults": {},
+    "endTime": "2026-07-08T19:31:50.248Z",
+    "durationMs": 0,
+    "error": "Step validation failed: ID is required."
+  },
+  {
+    "logId": "bb6cec8c-d5ed-470e-baa4-c298a9b16300",
+    "jobId": "cron-004",
+    "startTime": "2026-07-08T19:31:53.857Z",
+    "status": "failed",
+    "stepResults": {},
+    "endTime": "2026-07-08T19:31:53.857Z",
+    "durationMs": 0,
+    "error": "Step validation failed: ID is required."
+  },
+  {
+    "logId": "eb183f32-3927-4026-b754-93f6ad1cd730",
+    "jobId": "cron-004",
+    "startTime": "2026-07-08T19:32:15.283Z",
+    "status": "failed",
+    "stepResults": {
+      "step-1": {
+        "stepId": "step-1",
+        "stepName": "INIT_VARS",
+        "stepType": "SCRIPT",
+        "status": "success",
+        "startedAt": "2026-07-08T19:32:15.283Z",
+        "finishedAt": "2026-07-08T19:32:15.287Z",
+        "durationMs": 4,
+        "output": {
+          "status": "ok",
+          "message": "First step always passes."
+        }
+      },
+      "step-2": {
+        "stepId": "step-2",
+        "stepName": "DB_WRITE_SIMULATION",
+        "stepType": "SCRIPT",
+        "status": "failed",
+        "startedAt": "2026-07-08T19:32:15.285Z",
+        "finishedAt": "2026-07-08T19:32:15.287Z",
+        "durationMs": 2,
+        "error": "Script Sandbox Error: Simulated Database Connection Lost!"
+      }
+    },
+    "endTime": "2026-07-08T19:32:15.288Z",
+    "durationMs": 5,
+    "error": "Step \"DB_WRITE_SIMULATION\" failed: Script Sandbox Error: Simulated Database Connection Lost!"
+  },
+  {
+    "logId": "8815ff9b-0d24-4551-a444-0c9fcafe5376",
+    "jobId": "dag-test-001",
+    "startTime": "2026-07-08T19:33:24.194Z",
+    "status": "success",
+    "stepResults": {
+      "fetch-cat-fact": {
+        "stepId": "fetch-cat-fact",
+        "stepName": "Fetch cat fact",
+        "stepType": "RESTAPI",
+        "status": "success",
+        "startedAt": "2026-07-08T19:33:24.194Z",
+        "finishedAt": "2026-07-08T19:33:24.734Z",
+        "durationMs": 540,
+        "output": {
+          "status": 200,
+          "data": {
+            "fact": "Cats have 30 teeth (12 incisors, 10 premolars, 4 canines, and 4 molars), while dogs have 42. Kittens have baby teeth, which are replaced by permanent teeth around the age of 7 months.",
+            "length": 183
+          }
+        }
+      },
+      "fetch-random-user": {
+        "stepId": "fetch-random-user",
+        "stepName": "Fetch random user",
+        "stepType": "RESTAPI",
+        "status": "success",
+        "startedAt": "2026-07-08T19:33:24.197Z",
+        "finishedAt": "2026-07-08T19:33:24.611Z",
+        "durationMs": 414,
+        "output": {
+          "status": 200,
+          "data": {
+            "results": [
+              {
+                "gender": "male",
+                "name": {
+                  "title": "Mr",
+                  "first": "Elias",
+                  "last": "Perko"
+                },
+                "location": {
+                  "street": {
+                    "number": 5812,
+                    "name": "Nordenskiöldinkatu"
+                  },
+                  "city": "Riihimäki",
+                  "state": "Central Finland",
+                  "country": "Finland",
+                  "postcode": 74280,
+                  "coordinates": {
+                    "latitude": "-24.5024",
+                    "longitude": "-23.0045"
+                  },
+                  "timezone": {
+                    "offset": "+4:30",
+                    "description": "Kabul"
+                  }
+                },
+                "email": "elias.perko@example.com",
+                "login": {
+                  "uuid": "4ba97b0b-9801-4a4a-99f0-c0929e48a946",
+                  "username": "yellowbear797",
+                  "password": "marathon",
+                  "salt": "MHcgOrPu",
+                  "md5": "f439e09340f3cd3103610cf7846a44a0",
+                  "sha1": "dc7ff60b8119ea8ab65b3a981b1a47cf99eed8a6",
+                  "sha256": "be647888554d19652bab5942663acf9d217ee2bfd564ead22560d9cc06444f93"
+                },
+                "dob": {
+                  "date": "1947-12-09T20:05:14.657Z",
+                  "age": 78
+                },
+                "registered": {
+                  "date": "2013-12-18T12:18:08.539Z",
+                  "age": 12
+                },
+                "phone": "06-925-662",
+                "cell": "044-499-08-42",
+                "id": {
+                  "name": "HETU",
+                  "value": "NaNNA719undefined"
+                },
+                "picture": {
+                  "large": "https://randomuser.me/api/portraits/men/16.jpg",
+                  "medium": "https://randomuser.me/api/portraits/med/men/16.jpg",
+                  "thumbnail": "https://randomuser.me/api/portraits/thumb/men/16.jpg"
+                },
+                "nat": "FI"
+              }
+            ],
+            "info": {
+              "seed": "8f391f4b0de2a95c",
+              "results": 1,
+              "page": 1,
+              "version": "1.4"
+            }
+          }
+        }
+      },
+      "parse-cat-fact": {
+        "stepId": "parse-cat-fact",
+        "stepName": "Parse cat fact",
+        "stepType": "SCRIPT",
+        "status": "success",
+        "startedAt": "2026-07-08T19:33:24.735Z",
+        "finishedAt": "2026-07-08T19:33:24.738Z",
+        "durationMs": 3,
+        "output": {
+          "fact": "Cats have 30 teeth (12 incisors, 10 premolars, 4 canines, and 4 molars), while dogs have 42. Kittens have baby teeth, which are replaced by permanent teeth around the age of 7 months.",
+          "length": 183
+        }
+      },
+      "parse-random-user": {
+        "stepId": "parse-random-user",
+        "stepName": "Parse random user",
+        "stepType": "SCRIPT",
+        "status": "success",
+        "startedAt": "2026-07-08T19:33:24.737Z",
+        "finishedAt": "2026-07-08T19:33:24.738Z",
+        "durationMs": 1,
+        "output": {
+          "fullName": "Elias Perko",
+          "email": "elias.perko@example.com"
+        }
+      },
+      "combine-results": {
+        "stepId": "combine-results",
+        "stepName": "Combine results",
+        "stepType": "SCRIPT",
+        "status": "success",
+        "startedAt": "2026-07-08T19:33:24.738Z",
+        "finishedAt": "2026-07-08T19:33:24.739Z",
+        "durationMs": 1,
+        "output": {
+          "catFact": "Cats have 30 teeth (12 incisors, 10 premolars, 4 canines, and 4 molars), while dogs have 42. Kittens have baby teeth, which are replaced by permanent teeth around the age of 7 months.",
+          "user": "Elias Perko"
+        }
+      }
+    },
+    "endTime": "2026-07-08T19:33:24.739Z",
+    "durationMs": 545
+  },
+  {
+    "logId": "aab1902d-c731-4325-9b52-bfd78d755b80",
+    "jobId": "retry-test-001",
+    "startTime": "2026-07-08T19:39:22.458Z",
+    "status": "failed",
+    "stepResults": {
+      "550e8400-e29b-41d4-a716-446655440401": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440401",
+        "stepName": "Retry REST API failure",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-08T19:39:22.459Z",
+        "finishedAt": "2026-07-08T19:39:25.823Z",
+        "durationMs": 3364,
+        "attempts": [
+          {
+            "attempt": 1,
+            "status": "failed",
+            "startedAt": "2026-07-08T19:39:22.459Z",
+            "finishedAt": "2026-07-08T19:39:23.434Z",
+            "durationMs": 975,
+            "error": "RESTAPI execution failed: RESTAPI request failed with status 500: \"\""
+          },
+          {
+            "attempt": 2,
+            "status": "failed",
+            "startedAt": "2026-07-08T19:39:24.445Z",
+            "finishedAt": "2026-07-08T19:39:24.630Z",
+            "durationMs": 185,
+            "error": "RESTAPI execution failed: RESTAPI request failed with status 500: \"\""
+          },
+          {
+            "attempt": 3,
+            "status": "failed",
+            "startedAt": "2026-07-08T19:39:25.646Z",
+            "finishedAt": "2026-07-08T19:39:25.823Z",
+            "durationMs": 177,
+            "error": "RESTAPI execution failed: RESTAPI request failed with status 500: \"\""
+          }
+        ],
+        "error": "RESTAPI execution failed: RESTAPI request failed with status 500: \"\""
+      },
+      "550e8400-e29b-41d4-a716-446655440402": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440402",
+        "stepName": "Retry command failure",
+        "stepType": "COMMAND",
+        "status": "failed",
+        "startedAt": "2026-07-08T19:39:22.523Z",
+        "finishedAt": "2026-07-08T19:39:26.294Z",
+        "durationMs": 3771,
+        "attempts": [
+          {
+            "attempt": 1,
+            "status": "failed",
+            "startedAt": "2026-07-08T19:39:22.523Z",
+            "finishedAt": "2026-07-08T19:39:22.592Z",
+            "durationMs": 69,
+            "error": "COMMAND execution failed. Exit code: 1"
+          },
+          {
+            "attempt": 2,
+            "status": "failed",
+            "startedAt": "2026-07-08T19:39:23.094Z",
+            "finishedAt": "2026-07-08T19:39:23.154Z",
+            "durationMs": 60,
+            "error": "COMMAND execution failed. Exit code: 1"
+          },
+          {
+            "attempt": 3,
+            "status": "failed",
+            "startedAt": "2026-07-08T19:39:24.169Z",
+            "finishedAt": "2026-07-08T19:39:24.228Z",
+            "durationMs": 59,
+            "error": "COMMAND execution failed. Exit code: 1"
+          },
+          {
+            "attempt": 4,
+            "status": "failed",
+            "startedAt": "2026-07-08T19:39:26.235Z",
+            "finishedAt": "2026-07-08T19:39:26.294Z",
+            "durationMs": 59,
+            "error": "COMMAND execution failed. Exit code: 1"
+          }
+        ],
+        "error": "COMMAND execution failed. Exit code: 1"
+      }
+    },
+    "endTime": "2026-07-08T19:39:26.295Z",
+    "durationMs": 3837,
+    "error": "Step \"Retry REST API failure\" failed: RESTAPI execution failed: RESTAPI request failed with status 500: \"\""
+  },
+  {
+    "logId": "8b1e44ff-63a8-4eae-b880-b4d5a43c0a9f",
+    "jobId": "test01",
+    "startTime": "2026-07-13T06:36:42.614Z",
+    "status": "failed",
+    "stepResults": {
+      "step1": {
+        "stepId": "step1",
+        "stepType": "COMMAND",
+        "status": "failed",
+        "startedAt": "2026-07-13T06:36:42.618Z",
+        "finishedAt": "2026-07-13T06:36:46.815Z",
+        "durationMs": 4197,
+        "attempts": [
+          {
+            "attempt": 1,
+            "status": "failed",
+            "startedAt": "2026-07-13T06:36:42.619Z",
+            "finishedAt": "2026-07-13T06:36:46.815Z",
+            "durationMs": 4196,
+            "error": "COMMAND execution failed. Exit code: 6 stderr: curl: (3) URL rejected: Port number was not a decimal number between 0 and 65535\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0\r  0      0   0      0   0      0      0      0           00:02              0curl: (6) Could not resolve host: application\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0curl: (6) Could not resolve host: vJkXGZ5UL6VdztZJapqrGAJ98RzgGozlThCYfg6J"
+          }
+        ],
+        "error": "COMMAND execution failed. Exit code: 6 stderr: curl: (3) URL rejected: Port number was not a decimal number between 0 and 65535\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0\r  0      0   0      0   0      0      0      0           00:02              0curl: (6) Could not resolve host: application\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0curl: (6) Could not resolve host: vJkXGZ5UL6VdztZJapqrGAJ98RzgGozlThCYfg6J"
+      }
+    },
+    "endTime": "2026-07-13T06:36:46.828Z",
+    "durationMs": 4214,
+    "error": "Step \"undefined\" failed: COMMAND execution failed. Exit code: 6 stderr: curl: (3) URL rejected: Port number was not a decimal number between 0 and 65535\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0\r  0      0   0      0   0      0      0      0           00:02              0curl: (6) Could not resolve host: application\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0curl: (6) Could not resolve host: vJkXGZ5UL6VdztZJapqrGAJ98RzgGozlThCYfg6J"
+  },
+  {
+    "logId": "4cc5a106-7bf9-4cc9-8d36-ddb9c5154578",
+    "jobId": "test01",
+    "startTime": "2026-07-13T06:37:48.677Z",
+    "status": "failed",
+    "stepResults": {
+      "step1": {
+        "stepId": "step1",
+        "stepName": "cat fact curl",
+        "stepType": "COMMAND",
+        "status": "failed",
+        "startedAt": "2026-07-13T06:37:48.677Z",
+        "finishedAt": "2026-07-13T06:37:52.805Z",
+        "durationMs": 4128,
+        "attempts": [
+          {
+            "attempt": 1,
+            "status": "failed",
+            "startedAt": "2026-07-13T06:37:48.678Z",
+            "finishedAt": "2026-07-13T06:37:52.805Z",
+            "durationMs": 4127,
+            "error": "COMMAND execution failed. Exit code: 6 stderr: curl: (3) URL rejected: Port number was not a decimal number between 0 and 65535\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0\r  0      0   0      0   0      0      0      0           00:02              0curl: (6) Could not resolve host: application\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0curl: (6) Could not resolve host: vJkXGZ5UL6VdztZJapqrGAJ98RzgGozlThCYfg6J"
+          }
+        ],
+        "error": "COMMAND execution failed. Exit code: 6 stderr: curl: (3) URL rejected: Port number was not a decimal number between 0 and 65535\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0\r  0      0   0      0   0      0      0      0           00:02              0curl: (6) Could not resolve host: application\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0curl: (6) Could not resolve host: vJkXGZ5UL6VdztZJapqrGAJ98RzgGozlThCYfg6J"
+      }
+    },
+    "endTime": "2026-07-13T06:37:52.807Z",
+    "durationMs": 4130,
+    "error": "Step \"cat fact curl\" failed: COMMAND execution failed. Exit code: 6 stderr: curl: (3) URL rejected: Port number was not a decimal number between 0 and 65535\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0\r  0      0   0      0   0      0      0      0           00:02              0curl: (6) Could not resolve host: application\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0curl: (6) Could not resolve host: vJkXGZ5UL6VdztZJapqrGAJ98RzgGozlThCYfg6J"
+  },
+  {
+    "logId": "f8f45609-c453-41fe-8518-3ef1ff90e953",
+    "jobId": "test01",
+    "startTime": "2026-07-13T06:38:19.015Z",
+    "status": "failed",
+    "stepResults": {
+      "step1": {
+        "stepId": "step1",
+        "stepName": "cat fact curl",
+        "stepType": "COMMAND",
+        "status": "failed",
+        "startedAt": "2026-07-13T06:38:19.021Z",
+        "finishedAt": "2026-07-13T06:38:23.173Z",
+        "durationMs": 4152,
+        "attempts": [
+          {
+            "attempt": 1,
+            "status": "failed",
+            "startedAt": "2026-07-13T06:38:19.024Z",
+            "finishedAt": "2026-07-13T06:38:23.173Z",
+            "durationMs": 4149,
+            "error": "COMMAND execution failed. Exit code: 6 stderr: curl: (3) URL rejected: Port number was not a decimal number between 0 and 65535\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0\r  0      0   0      0   0      0      0      0           00:02              0curl: (6) Could not resolve host: application\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0curl: (6) Could not resolve host: vJkXGZ5UL6VdztZJapqrGAJ98RzgGozlThCYfg6J"
+          }
+        ],
+        "error": "COMMAND execution failed. Exit code: 6 stderr: curl: (3) URL rejected: Port number was not a decimal number between 0 and 65535\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0\r  0      0   0      0   0      0      0      0           00:02              0curl: (6) Could not resolve host: application\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0curl: (6) Could not resolve host: vJkXGZ5UL6VdztZJapqrGAJ98RzgGozlThCYfg6J"
+      }
+    },
+    "endTime": "2026-07-13T06:38:23.189Z",
+    "durationMs": 4174,
+    "error": "Step \"cat fact curl\" failed: COMMAND execution failed. Exit code: 6 stderr: curl: (3) URL rejected: Port number was not a decimal number between 0 and 65535\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0\r  0      0   0      0   0      0      0      0           00:02              0curl: (6) Could not resolve host: application\r\n  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r  0      0   0      0   0      0      0      0           00:01              0curl: (6) Could not resolve host: vJkXGZ5UL6VdztZJapqrGAJ98RzgGozlThCYfg6J"
+  },
+  {
+    "logId": "809538f8-975b-42c9-9c38-ca8d5cd92a6b",
+    "jobId": "test01",
+    "startTime": "2026-07-13T06:41:04.510Z",
+    "status": "failed",
+    "stepResults": {
+      "step1": {
+        "stepId": "step1",
+        "stepName": "cat fact curl",
+        "stepType": "COMMAND",
+        "status": "failed",
+        "startedAt": "2026-07-13T06:41:04.515Z",
+        "finishedAt": "2026-07-13T06:41:04.718Z",
+        "durationMs": 203,
+        "attempts": [
+          {
+            "attempt": 1,
+            "status": "failed",
+            "startedAt": "2026-07-13T06:41:04.516Z",
+            "finishedAt": "2026-07-13T06:41:04.718Z",
+            "durationMs": 202,
+            "error": "COMMAND execution failed. Exit code: 6 stderr: % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0curl: (6) Could not resolve host: catfact.ninja"
+          }
+        ],
+        "error": "COMMAND execution failed. Exit code: 6 stderr: % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0curl: (6) Could not resolve host: catfact.ninja"
+      }
+    },
+    "endTime": "2026-07-13T06:41:04.731Z",
+    "durationMs": 221,
+    "error": "Step \"cat fact curl\" failed: COMMAND execution failed. Exit code: 6 stderr: % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0curl: (6) Could not resolve host: catfact.ninja"
+  },
+  {
+    "logId": "2eddcafd-4ed1-4dc3-ab26-d50069c76b2e",
+    "jobId": "test01",
+    "startTime": "2026-07-13T06:43:05.365Z",
+    "status": "success",
+    "stepResults": {
+      "step1": {
+        "stepId": "step1",
+        "stepName": "cat fact curl",
+        "stepType": "COMMAND",
+        "status": "success",
+        "startedAt": "2026-07-13T06:43:05.370Z",
+        "finishedAt": "2026-07-13T06:43:05.610Z",
+        "durationMs": 240,
+        "attempts": [
+          {
+            "attempt": 1,
+            "status": "success",
+            "startedAt": "2026-07-13T06:43:05.372Z",
+            "finishedAt": "2026-07-13T06:43:05.610Z",
+            "durationMs": 238
+          }
+        ],
+        "output": {
+          "exitCode": 0,
+          "stdout": "[{\"id\":\"cron-001\",\"name\":\"Fetch Daily Cat Fact\",\"schedule\":\"0 9 * * *\",\"description\":\"Makes REST API call to fetch a random fact, then uses a script to parse the response.\",\"STEPS\":[{\"ORDER\":1,\"NAME\":\"FETCH_API\",\"TYPE\":\"RESTAPI\",\"STEP_PARAMS\":{\"URL\":\"https://catfact.ninja/fact\",\"METHOD\":\"GET\"}},{\"ORDER\":2,\"NAME\":\"FETCH_API_2\",\"TYPE\":\"RESTAPI\",\"STEP_PARAMS\":{\"URL\":\"https://randomuser.me/api/?results=1\",\"METHOD\":\"GET\"}},{\"ORDER\":3,\"NAME\":\"PARSE_RESULT\",\"TYPE\":\"SCRIPT\",\"DEPENDS_ON\":[\"FETCH_API\"],\"STEP_PARAMS\":{\"CODE\":\"((context) => { const apiResponse = context.FETCH_API; return { statusCheck: apiResponse.status === 200 ? 'OK' : 'FAIL', factText: apiResponse.data.fact, factLength: apiResponse.data.length }; })\"}}],\"status\":\"active\",\"last_run\":null,\"next_run\":\"2026-06-28T09:00:00Z\"},{\"id\":\"cron-002\",\"name\":\"User Data Sync Pipeline\",\"schedule\":\"0 * * * *\",\"description\":\"Fetches random user data, transforms it using a script, and simulates a final system command.\",\"STEPS\":[{\"ORDER\":1,\"NAME\":\"FETCH_USERS\",\"TYPE\":\"RESTAPI\",\"STEP_PARAMS\":{\"URL\":\"https://randomuser.me/api/?results=1\",\"METHOD\":\"GET\"}},{\"ORDER\":2,\"NAME\":\"TRANSFORM_DATA\",\"TYPE\":\"SCRIPT\",\"STEP_PARAMS\":{\"CODE\":\"((context) => { const users = context.FETCH_USERS.data.results; return users.map(u => ({ fullName: u.name.first + ' ' + u.name.last, email: u.email })); })\"}},{\"ORDER\":3,\"NAME\":\"FINALIZE_SYNC\",\"TYPE\":\"COMMAND\",\"STEP_PARAMS\":{\"COMMAND\":\"echo 'a user successfully synced to the data warehouse'\"}}],\"status\":\"active\",\"last_run\":null,\"next_run\":\"2026-06-27T15:00:00Z\"},{\"id\":\"cron-003\",\"name\":\"Python Data Processing\",\"schedule\":\"0 12 * * *\",\"description\":\"Runs a Python script to do math/data processing and returns JSON.\",\"STEPS\":[{\"ORDER\":1,\"NAME\":\"MATH_OPERATION\",\"TYPE\":\"PYTHON\",\"STEP_PARAMS\":{\"CODE\":\"import json\\nimport math\\n\\nresult = {\\n  'status': 'success',\\n  'pi_value': math.pi,\\n  'calculation': math.sqrt(144)\\n}\\n\\nprint(json.dumps(result))\"}}],\"status\":\"active\",\"last_run\":null,\"next_run\":\"2026-06-28T12:00:00Z\"},{\"id\":\"cron-004\",\"name\":\"Retry Mechanism Test Job\",\"schedule\":\"0 0 * * *\",\"description\":\"This job is designed to fail to test the retry and backoff logic.\",\"maxRetries\":3,\"STEPS\":[{\"ID\":\"step-1\",\"ORDER\":1,\"NAME\":\"INIT_VARS\",\"TYPE\":\"SCRIPT\",\"STEP_PARAMS\":{\"CODE\":\"((context) => { return { status: 'ok', message: 'First step always passes.' }; })\"}},{\"ID\":\"step-2\",\"ORDER\":2,\"NAME\":\"DB_WRITE_SIMULATION\",\"TYPE\":\"SCRIPT\",\"STEP_PARAMS\":{\"CODE\":\"((context) => { throw new Error('Simulated Database Connection Lost!'); })\"}}],\"status\":\"active\",\"last_run\":null,\"next_run\":\"2026-06-28T00:00:00Z\"},{\"id\":\"Url-test-001\",\"name\":\"Fail Intentionally Job\",\"schedule\":\"*/5 * * * *\",\"description\":\"Send request to an invalid URL to test error handling.\",\"STEPS\":[{\"ORDER\":1,\"ID\":\"550e8400-e29b-41d4-a716-446655440101\",\"NAME\":\"Timeout test request\",\"TYPE\":\"RESTAPI\",\"STEP_PARAMS\":{\"URL\":\"https://httpbin.org/delay/10\",\"METHOD\":\"GET\",\"TIMEOUT_MS\":2000}},{\"ORDER\":2,\"ID\":\"550e8400-e29b-41d4-a716-446655440102\",\"NAME\":\"Invalid domain test\",\"TYPE\":\"RESTAPI\",\"STEP_PARAMS\":{\"URL\":\"https://this-domain-should-not-exist-123456789.com/api\",\"METHOD\":\"GET\",\"TIMEOUT_MS\":5000}},{\"ORDER\":3,\"ID\":\"550e8400-e29b-41d4-a716-446655440103\",\"NAME\":\"Invalid URL format test\",\"TYPE\":\"RESTAPI\",\"STEP_PARAMS\":{\"URL\":\"not-a-valid-url\",\"METHOD\":\"GET\",\"TIMEOUT_MS\":5000}},{\"ORDER\":4,\"ID\":\"550e8400-e29b-41d4-a716-446655440104\",\"NAME\":\"HTTP 404 test\",\"TYPE\":\"RESTAPI\",\"STEP_PARAMS\":{\"URL\":\"https://httpbin.org/status/404\",\"METHOD\":\"GET\",\"TIMEOUT_MS\":5000}},{\"ORDER\":5,\"ID\":\"550e8400-e29b-41d4-a716-446655440105\",\"NAME\":\"HTTP 500 test\",\"TYPE\":\"RESTAPI\",\"STEP_PARAMS\":{\"URL\":\"https://httpbin.org/status/500\",\"METHOD\":\"GET\",\"TIMEOUT_MS\":5000}}],\"status\":\"active\",\"last_run\":null,\"next_run\":null},{\"id\":\"command-test-001\",\"name\":\"Command Execution Test Job\",\"schedule\":\"*/5 * * * *\",\"description\":\"Tests command execution and error handling.\",\"STEPS\":[{\"ORDER\":1,\"ID\":\"echo-step\",\"NAME\":\"Echo Command\",\"TYPE\":\"COMMAND\",\"STEP_PARAMS\":{\"COMMAND\":\"echo 'Hello, World!'\"}},{\"ORDER\":2,\"ID\":\"failing-command-step\",\"NAME\":\"Failing Command\",\"TYPE\":\"COMMAND\",\"STEP_PARAMS\":{\"COMMAND\":\"node -e \\\"process.exit(1)\\\"\"}}],\"status\":\"active\",\"last_run\":null,\"next_run\":null},{\"id\":\"dag-test-001\",\"name\":\"Dependency Test Job\",\"schedule\":\"*/5 * * * *\",\"description\":\"Tests dependency-based execution.\",\"MAX_CONCURRENCY\":2,\"STEPS\":[{\"ORDER\":1,\"ID\":\"fetch-cat-fact\",\"NAME\":\"Fetch cat fact\",\"TYPE\":\"RESTAPI\",\"STEP_PARAMS\":{\"URL\":\"https://catfact.ninja/fact\",\"METHOD\":\"GET\",\"TIMEOUT_MS\":10000}},{\"ORDER\":2,\"ID\":\"fetch-random-user\",\"NAME\":\"Fetch random user\",\"TYPE\":\"RESTAPI\",\"STEP_PARAMS\":{\"URL\":\"https://randomuser.me/api/?results=1\",\"METHOD\":\"GET\"}},{\"ORDER\":3,\"ID\":\"parse-cat-fact\",\"NAME\":\"Parse cat fact\",\"TYPE\":\"SCRIPT\",\"DEPENDS_ON\":[\"fetch-cat-fact\"],\"STEP_PARAMS\":{\"CODE\":\"((context) => { const response = context['fetch-cat-fact']; return { fact: response.data.fact, length: response.data.length }; })\"}},{\"ORDER\":4,\"ID\":\"parse-random-user\",\"NAME\":\"Parse random user\",\"TYPE\":\"SCRIPT\",\"DEPENDS_ON\":[\"fetch-random-user\"],\"STEP_PARAMS\":{\"CODE\":\"((context) => { const response = context['fetch-random-user']; const user = response.data.results[0]; return { fullName: `${user.name.first} ${user.name.last}`, email: user.email }; })\"}},{\"ORDER\":5,\"ID\":\"combine-results\",\"NAME\":\"Combine results\",\"TYPE\":\"SCRIPT\",\"DEPENDS_ON\":[\"parse-cat-fact\",\"parse-random-user\"],\"STEP_PARAMS\":{\"CODE\":\"((context) => { return { catFact: context['parse-cat-fact'].fact, user: context['parse-random-user'].fullName }; })\"}}],\"status\":\"active\",\"last_run\":null,\"next_run\":null},{\"id\":\"test01\",\"name\":\"test01\",\"STEPS\":[{\"ID\":\"step1\",\"NAME\":\"cat fact curl\",\"TYPE\":\"COMMAND\",\"STEP_PARAMS\":{\"COMMAND\":\"curl -X GET http://localhost:3000/api/jobs/\"}}]},{\"id\":\"retry-test-001\",\"name\":\"Generic Retry Test Job\",\"schedule\":\"*/5 * * * *\",\"MAX_CONCURRENCY\":5,\"DEFAULT_RETRY\":{\"COUNT\":2,\"DELAY_MS\":1000,\"BACKOFF\":\"fixed\"},\"STEPS\":[{\"ORDER\":1,\"ID\":\"550e8400-e29b-41d4-a716-446655440401\",\"NAME\":\"Retry REST API failure\",\"TYPE\":\"RESTAPI\",\"STEP_PARAMS\":{\"URL\":\"https://httpbin.org/status/500\",\"METHOD\":\"GET\",\"TIMEOUT_MS\":3000,\"FAIL_ON_NON_2XX\":true}},{\"ORDER\":2,\"ID\":\"550e8400-e29b-41d4-a716-446655440402\",\"NAME\":\"Retry command failure\",\"TYPE\":\"COMMAND\",\"RETRY\":{\"COUNT\":3,\"DELAY_MS\":500,\"BACKOFF\":\"exponential\"},\"STEP_PARAMS\":{\"COMMAND\":\"node -e \\\"process.exit(1)\\\"\"}}],\"status\":\"active\"}]",
+          "stderr": "% Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\r\n                                 Dload  Upload  Total   Spent   Left   Speed\r\n\r  0      0   0      0   0      0      0      0                              0\r100   6394 100   6394   0      0 340.3k      0                              0\r100   6394 100   6394   0      0 337.5k      0                              0\r100   6394 100   6394   0      0 335.0k      0                              0"
+        }
+      }
+    },
+    "endTime": "2026-07-13T06:43:05.611Z",
+    "durationMs": 246
+  },
+  {
+    "logId": "ff9e7be7-2c1b-4649-9db1-3a4431a88dcd",
+    "jobId": "retry-test-001",
+    "startTime": "2026-07-13T06:58:01.681Z",
+    "status": "failed",
+    "stepResults": {
+      "550e8400-e29b-41d4-a716-446655440401": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440401",
+        "stepName": "Retry REST API failure",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-13T06:58:01.686Z",
+        "finishedAt": "2026-07-13T06:58:03.077Z",
+        "durationMs": 1391,
+        "attempts": [
+          {
+            "attempt": 1,
+            "status": "failed",
+            "startedAt": "2026-07-13T06:58:01.687Z",
+            "finishedAt": "2026-07-13T06:58:01.986Z",
+            "durationMs": 299,
+            "error": "RESTAPI execution failed: request timed out after 1ms."
+          },
+          {
+            "attempt": 2,
+            "status": "failed",
+            "startedAt": "2026-07-13T06:58:02.195Z",
+            "finishedAt": "2026-07-13T06:58:02.202Z",
+            "durationMs": 7,
+            "error": "RESTAPI execution failed: request timed out after 1ms."
+          },
+          {
+            "attempt": 3,
+            "status": "failed",
+            "startedAt": "2026-07-13T06:58:02.411Z",
+            "finishedAt": "2026-07-13T06:58:02.418Z",
+            "durationMs": 7,
+            "error": "RESTAPI execution failed: request timed out after 1ms."
+          },
+          {
+            "attempt": 4,
+            "status": "failed",
+            "startedAt": "2026-07-13T06:58:02.632Z",
+            "finishedAt": "2026-07-13T06:58:02.640Z",
+            "durationMs": 8,
+            "error": "RESTAPI execution failed: fetch failed"
+          },
+          {
+            "attempt": 5,
+            "status": "failed",
+            "startedAt": "2026-07-13T06:58:02.849Z",
+            "finishedAt": "2026-07-13T06:58:02.855Z",
+            "durationMs": 6,
+            "error": "RESTAPI execution failed: request timed out after 1ms."
+          },
+          {
+            "attempt": 6,
+            "status": "failed",
+            "startedAt": "2026-07-13T06:58:03.070Z",
+            "finishedAt": "2026-07-13T06:58:03.077Z",
+            "durationMs": 7,
+            "error": "RESTAPI execution failed: request timed out after 1ms."
+          }
+        ],
+        "error": "RESTAPI execution failed: request timed out after 1ms."
+      },
+      "550e8400-e29b-41d4-a716-446655440402": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440402",
+        "stepName": "Retry command failure",
+        "stepType": "COMMAND",
+        "status": "failed",
+        "startedAt": "2026-07-13T06:58:01.934Z",
+        "finishedAt": "2026-07-13T06:58:06.114Z",
+        "durationMs": 4180,
+        "attempts": [
+          {
+            "attempt": 1,
+            "status": "failed",
+            "startedAt": "2026-07-13T06:58:01.934Z",
+            "finishedAt": "2026-07-13T06:58:02.151Z",
+            "durationMs": 217,
+            "error": "COMMAND execution failed. Exit code: 1"
+          },
+          {
+            "attempt": 2,
+            "status": "failed",
+            "startedAt": "2026-07-13T06:58:02.662Z",
+            "finishedAt": "2026-07-13T06:58:02.772Z",
+            "durationMs": 110,
+            "error": "COMMAND execution failed. Exit code: 1"
+          },
+          {
+            "attempt": 3,
+            "status": "failed",
+            "startedAt": "2026-07-13T06:58:03.774Z",
+            "finishedAt": "2026-07-13T06:58:03.924Z",
+            "durationMs": 150,
+            "error": "COMMAND execution failed. Exit code: 1"
+          },
+          {
+            "attempt": 4,
+            "status": "failed",
+            "startedAt": "2026-07-13T06:58:05.940Z",
+            "finishedAt": "2026-07-13T06:58:06.113Z",
+            "durationMs": 173,
+            "error": "COMMAND execution failed. Exit code: 1"
+          }
+        ],
+        "error": "COMMAND execution failed. Exit code: 1"
+      }
+    },
+    "endTime": "2026-07-13T06:58:06.117Z",
+    "durationMs": 4436,
+    "error": "Step \"Retry REST API failure\" failed: RESTAPI execution failed: request timed out after 1ms."
+  },
+  {
+    "logId": "af58f4a3-421d-4f68-9881-0b3e1496377f",
+    "jobId": "retry-test-001",
+    "startTime": "2026-07-13T07:00:06.224Z",
+    "status": "failed",
+    "stepResults": {
+      "550e8400-e29b-41d4-a716-446655440401": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440401",
+        "stepName": "Retry REST API failure",
+        "stepType": "RESTAPI",
+        "status": "failed",
+        "startedAt": "2026-07-13T07:00:06.228Z",
+        "finishedAt": "2026-07-13T07:00:07.451Z",
+        "durationMs": 1223,
+        "attempts": [
+          {
+            "attempt": 1,
+            "status": "failed",
+            "startedAt": "2026-07-13T07:00:06.229Z",
+            "finishedAt": "2026-07-13T07:00:06.360Z",
+            "durationMs": 131,
+            "error": "RESTAPI execution failed: request timed out after 1ms."
+          },
+          {
+            "attempt": 2,
+            "status": "failed",
+            "startedAt": "2026-07-13T07:00:06.574Z",
+            "finishedAt": "2026-07-13T07:00:06.580Z",
+            "durationMs": 6,
+            "error": "RESTAPI execution failed: request timed out after 1ms."
+          },
+          {
+            "attempt": 3,
+            "status": "failed",
+            "startedAt": "2026-07-13T07:00:06.791Z",
+            "finishedAt": "2026-07-13T07:00:06.796Z",
+            "durationMs": 5,
+            "error": "RESTAPI execution failed: request timed out after 1ms."
+          },
+          {
+            "attempt": 4,
+            "status": "failed",
+            "startedAt": "2026-07-13T07:00:07.010Z",
+            "finishedAt": "2026-07-13T07:00:07.017Z",
+            "durationMs": 7,
+            "error": "RESTAPI execution failed: request timed out after 1ms."
+          },
+          {
+            "attempt": 5,
+            "status": "failed",
+            "startedAt": "2026-07-13T07:00:07.228Z",
+            "finishedAt": "2026-07-13T07:00:07.234Z",
+            "durationMs": 6,
+            "error": "RESTAPI execution failed: request timed out after 1ms."
+          },
+          {
+            "attempt": 6,
+            "status": "failed",
+            "startedAt": "2026-07-13T07:00:07.445Z",
+            "finishedAt": "2026-07-13T07:00:07.451Z",
+            "durationMs": 6,
+            "error": "RESTAPI execution failed: fetch failed"
+          }
+        ],
+        "error": "RESTAPI execution failed: fetch failed"
+      },
+      "550e8400-e29b-41d4-a716-446655440402": {
+        "stepId": "550e8400-e29b-41d4-a716-446655440402",
+        "stepName": "Retry command failure",
+        "stepType": "COMMAND",
+        "status": "failed",
+        "startedAt": "2026-07-13T07:00:07.464Z",
+        "finishedAt": "2026-07-13T07:00:11.644Z",
+        "durationMs": 4180,
+        "attempts": [
+          {
+            "attempt": 1,
+            "status": "failed",
+            "startedAt": "2026-07-13T07:00:07.465Z",
+            "finishedAt": "2026-07-13T07:00:07.671Z",
+            "durationMs": 206,
+            "error": "COMMAND execution failed. Exit code: 1"
+          },
+          {
+            "attempt": 2,
+            "status": "failed",
+            "startedAt": "2026-07-13T07:00:08.179Z",
+            "finishedAt": "2026-07-13T07:00:08.306Z",
+            "durationMs": 127,
+            "error": "COMMAND execution failed. Exit code: 1"
+          },
+          {
+            "attempt": 3,
+            "status": "failed",
+            "startedAt": "2026-07-13T07:00:09.316Z",
+            "finishedAt": "2026-07-13T07:00:09.494Z",
+            "durationMs": 178,
+            "error": "COMMAND execution failed. Exit code: 1"
+          },
+          {
+            "attempt": 4,
+            "status": "failed",
+            "startedAt": "2026-07-13T07:00:11.509Z",
+            "finishedAt": "2026-07-13T07:00:11.644Z",
+            "durationMs": 135,
+            "error": "COMMAND execution failed. Exit code: 1"
+          }
+        ],
+        "error": "COMMAND execution failed. Exit code: 1"
+      }
+    },
+    "endTime": "2026-07-13T07:00:11.647Z",
+    "durationMs": 5423,
+    "error": "Step \"Retry REST API failure\" failed: RESTAPI execution failed: fetch failed"
+  }
+]

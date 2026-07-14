@@ -1,0 +1,345 @@
+[
+ {
+    "id": "cron-001",
+    "name": "Fetch Daily Cat Fact",
+    "schedule": "0 9 * * *",
+    "description": "Makes REST API call to fetch a random fact, then uses a script to parse the response.",
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "NAME": "FETCH_API",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://catfact.ninja/fact",
+          "METHOD": "GET"
+        }
+      },
+      {
+        "ORDER": 2,
+        "NAME": "FETCH_API_2",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://randomuser.me/api/?results=1",
+          "METHOD": "GET"
+        }
+      },
+      {
+        "ORDER": 3,
+        "NAME": "PARSE_RESULT",
+        "TYPE": "SCRIPT",
+        "DEPENDS_ON": ["FETCH_API"],
+        "STEP_PARAMS": {
+          "CODE": "((context) => { const apiResponse = context.FETCH_API; return { statusCheck: apiResponse.status === 200 ? 'OK' : 'FAIL', factText: apiResponse.data.fact, factLength: apiResponse.data.length }; })"
+        }
+      }
+    ],
+    "status": "active",
+    "last_run": null,
+    "next_run": "2026-06-28T09:00:00Z"
+ },
+ {
+    "id": "cron-002",
+    "name": "User Data Sync Pipeline",
+    "schedule": "0 * * * *",
+    "description": "Fetches random user data, transforms it using a script, and simulates a final system command.",
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "NAME": "FETCH_USERS",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://randomuser.me/api/?results=1",
+          "METHOD": "GET"
+        }
+      },
+      {
+        "ORDER": 2,
+        "NAME": "TRANSFORM_DATA",
+        "TYPE": "SCRIPT",
+        "STEP_PARAMS": {
+          "CODE": "((context) => { const users = context.FETCH_USERS.data.results; return users.map(u => ({ fullName: u.name.first + ' ' + u.name.last, email: u.email })); })"
+        }
+      },
+      {
+        "ORDER": 3,
+        "NAME": "FINALIZE_SYNC",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "echo 'a user successfully synced to the data warehouse'"
+        }
+      }
+    ],
+    "status": "active",
+    "last_run": null,
+    "next_run": "2026-06-27T15:00:00Z"
+ },
+ {
+    "id": "cron-003",
+    "name": "Python Data Processing",
+    "schedule": "0 12 * * *",
+    "description": "Runs a Python script to do math/data processing and returns JSON.",
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "NAME": "MATH_OPERATION",
+        "TYPE": "PYTHON",
+        "STEP_PARAMS": {
+          "CODE": "import json\nimport math\n\nresult = {\n  'status': 'success',\n  'pi_value': math.pi,\n  'calculation': math.sqrt(144)\n}\n\nprint(json.dumps(result))"
+        }
+      }
+    ],
+    "status": "active",
+    "last_run": null,
+    "next_run": "2026-06-28T12:00:00Z"
+ },
+ {
+    "id": "cron-004",
+    "name": "Retry Mechanism Test Job",
+    "schedule": "0 0 * * *",
+    "description": "This job is designed to fail to test the retry and backoff logic.",
+    "maxRetries": 3,
+    "STEPS": [
+      {
+        "ID": "step-1",
+        "ORDER": 1,
+        "NAME": "INIT_VARS",
+        "TYPE": "SCRIPT",
+        "STEP_PARAMS": {
+          "CODE": "((context) => { return { status: 'ok', message: 'First step always passes.' }; })"
+        }
+      },
+      {
+        "ID": "step-2",
+        "ORDER": 2,
+        "NAME": "DB_WRITE_SIMULATION",
+        "TYPE": "SCRIPT",
+        "STEP_PARAMS": {
+          "CODE": "((context) => { throw new Error('Simulated Database Connection Lost!'); })"
+        }
+      }
+    ],
+    "status": "active",
+    "last_run": null,
+    "next_run": "2026-06-28T00:00:00Z"
+  },
+  {
+  "id": "Url-test-001",
+  "name": "Fail Intentionally Job",
+  "schedule": "*/5 * * * *",
+  "description": "Send request to an invalid URL to test error handling.",
+  "STEPS": [
+    {
+      "ORDER": 1,
+      "ID": "550e8400-e29b-41d4-a716-446655440101",
+      "NAME": "Timeout test request",
+      "TYPE": "RESTAPI",
+      "STEP_PARAMS": {
+        "URL": "https://httpbin.org/delay/10",
+        "METHOD": "GET",
+        "TIMEOUT_MS": 2000
+      }
+    },
+    {
+      "ORDER": 2,
+      "ID": "550e8400-e29b-41d4-a716-446655440102",
+      "NAME": "Invalid domain test",
+      "TYPE": "RESTAPI",
+      "STEP_PARAMS": {
+        "URL": "https://this-domain-should-not-exist-123456789.com/api",
+        "METHOD": "GET",
+        "TIMEOUT_MS": 5000
+      }
+    },
+    {
+      "ORDER": 3,
+      "ID": "550e8400-e29b-41d4-a716-446655440103",
+      "NAME": "Invalid URL format test",
+      "TYPE": "RESTAPI",
+      "STEP_PARAMS": {
+        "URL": "not-a-valid-url",
+        "METHOD": "GET",
+        "TIMEOUT_MS": 5000
+      }
+    },
+    {
+      "ORDER": 4,
+      "ID": "550e8400-e29b-41d4-a716-446655440104",
+      "NAME": "HTTP 404 test",
+      "TYPE": "RESTAPI",
+      "STEP_PARAMS": {
+        "URL": "https://httpbin.org/status/404",
+        "METHOD": "GET",
+        "TIMEOUT_MS": 5000
+      }
+    },
+    {
+      "ORDER": 5,
+      "ID": "550e8400-e29b-41d4-a716-446655440105",
+      "NAME": "HTTP 500 test",
+      "TYPE": "RESTAPI",
+      "STEP_PARAMS": {
+        "URL": "https://httpbin.org/status/500",
+        "METHOD": "GET",
+        "TIMEOUT_MS": 5000
+      }
+    }
+  ],
+  "status": "active",
+  "last_run": null,
+  "next_run": null
+  },
+  {
+  "id": "command-test-001",
+  "name": "Command Execution Test Job",
+  "schedule": "*/5 * * * *",
+  "description": "Tests command execution and error handling.",
+  "STEPS": [
+    {
+      "ORDER": 1,
+      "ID": "echo-step",
+      "NAME": "Echo Command",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "echo 'Hello, World!'"
+      }
+    },
+    {
+      "ORDER": 2,
+      "ID": "failing-command-step",
+      "NAME": "Failing Command",
+      "TYPE": "COMMAND",
+      "STEP_PARAMS": {
+        "COMMAND": "node -e \"process.exit(1)\""
+      }
+    }
+  ],
+  "status": "active",
+  "last_run": null,
+  "next_run": null
+  },
+  {
+  "id": "dag-test-001",
+  "name": "Dependency Test Job",
+  "schedule": "*/5 * * * *",
+  "description": "Tests dependency-based execution.",
+  "MAX_CONCURRENCY": 2,
+  "STEPS": [
+    {
+      "ORDER": 1,
+      "ID": "fetch-cat-fact",
+      "NAME": "Fetch cat fact",
+      "TYPE": "RESTAPI",
+      "STEP_PARAMS": {
+        "URL": "https://catfact.ninja/fact",
+        "METHOD": "GET",
+        "TIMEOUT_MS": 10000
+      }
+    },
+    {
+      "ORDER": 2,
+      "ID": "fetch-random-user",
+      "NAME": "Fetch random user",
+      "TYPE": "RESTAPI",
+      "STEP_PARAMS": {
+        "URL": "https://randomuser.me/api/?results=1",
+        "METHOD": "GET"
+      }
+    },
+    {
+      "ORDER": 3,
+      "ID": "parse-cat-fact",
+      "NAME": "Parse cat fact",
+      "TYPE": "SCRIPT",
+      "DEPENDS_ON": ["fetch-cat-fact"],
+      "STEP_PARAMS": {
+        "CODE": "((context) => { const response = context['fetch-cat-fact']; return { fact: response.data.fact, length: response.data.length }; })"
+      }
+    },
+    {
+      "ORDER": 4,
+      "ID": "parse-random-user",
+      "NAME": "Parse random user",
+      "TYPE": "SCRIPT",
+      "DEPENDS_ON": ["fetch-random-user"],
+      "STEP_PARAMS": {
+        "CODE": "((context) => { const response = context['fetch-random-user']; const user = response.data.results[0]; return { fullName: `${user.name.first} ${user.name.last}`, email: user.email }; })"
+      }
+    },
+    {
+      "ORDER": 5,
+      "ID": "combine-results",
+      "NAME": "Combine results",
+      "TYPE": "SCRIPT",
+      "DEPENDS_ON": ["parse-cat-fact", "parse-random-user"],
+      "STEP_PARAMS": {
+        "CODE": "((context) => { return { catFact: context['parse-cat-fact'].fact, user: context['parse-random-user'].fullName }; })"
+      }
+    }
+  ],
+  "status": "active",
+  "last_run": null,
+  "next_run": null
+  },
+  {
+    "id":"test01",
+    "name": "test01",
+    "STEPS":[
+      {
+        "ID": "step1",
+        "NAME": "cat fact curl",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "curl -X GET http://localhost:3000/api/jobs/"
+        }
+      },
+      {
+        "ID": "step2",
+        "NAME": "use curl response",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://postman-echo.com/post",
+          "METHOD": "POST"
+        }
+      }
+    ]
+  },
+  {
+    "id": "retry-test-001",
+    "name": "Generic Retry Test Job",
+    "schedule": "*/5 * * * *",
+    "MAX_CONCURRENCY": 1,
+    "DEFAULT_RETRY": {
+      "COUNT": 5,
+      "DELAY_MS": 200,
+      "BACKOFF": "fixed"
+    },
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "550e8400-e29b-41d4-a716-446655440401",
+        "NAME": "Retry REST API failure",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://httpbin.org/status/200",
+          "METHOD": "GET",
+          "TIMEOUT_MS": 1
+        }
+      },
+      {
+        "ORDER": 2,
+        "ID": "550e8400-e29b-41d4-a716-446655440402",
+        "NAME": "Retry command failure",
+        "TYPE": "COMMAND",
+        "RETRY": {
+          "COUNT": 3,
+          "DELAY_MS": 500,
+          "BACKOFF": "exponential"
+        },
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"process.exit(1)\""
+        }
+      }
+    ],
+    "status": "active"
+  }
+]
