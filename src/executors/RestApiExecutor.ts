@@ -27,7 +27,7 @@ export class RestApiExecutor implements IStepExecutor {
             const method = resolveMethod(params.METHOD);
             timeoutMs = resolveTimeout(params.TIMEOUT_MS);
             const responseType = resolveResponseType(params.RESPONSE_TYPE);
-
+            const capturedResponseHeaderNames = resolveCapturedResponseHeaderNames(params.CAPTURE_RESPONSE_HEADERS);
             /**
                * A REST step may only consume context from steps explicitly
                * listed in DEPENDS_ON.
@@ -93,13 +93,17 @@ export class RestApiExecutor implements IStepExecutor {
             if (!response.ok) {
                 throw new Error(buildHttpErrorMessage(response, data));
             }
-        
-            return {
+            const output: RestApiStepOutput = {
                 status: response.status,
                 statusText: response.statusText,
-                headers: headersToRecord(response.headers),
                 data
             };
+            
+            if (capturedResponseHeaderNames !== undefined) {
+                output.headers = captureResponseHeaders(response.headers, capturedResponseHeaderNames);
+            }
+            return output;
+            
         }catch (error: unknown) {
             const resolvedError = error instanceof Error ? error : new Error(String(error));
             
@@ -290,12 +294,45 @@ function isJsonContentType(contentType: string): boolean {
     return (mimeType === 'application/json' || mimeType.endsWith('+json'));
 }
 
-function headersToRecord(headers: Headers): Record<string, string> {
-    const result: Record<string, string> = {};
-    headers.forEach((value, name) => {
-        result[name] = value;
-    });
-    return result;
+function resolveCapturedResponseHeaderNames(value: unknown): string[] | undefined {
+      if (value === undefined) return undefined;
+
+      if (!Array.isArray(value)) {
+          throw new Error('CAPTURE_RESPONSE_HEADERS must be an array.');
+      }
+
+      const uniqueNames = new Set<string>();
+
+      for (const item of value) {
+          if (typeof item !== 'string' || item.trim().length === 0) {
+              throw new Error('CAPTURE_RESPONSE_HEADERS must contain ' + 'non-empty strings.');
+          }
+
+          const normalizedName = item.trim().toLowerCase();
+
+          try {
+              const validationHeaders = new Headers();
+              validationHeaders.set(normalizedName, 'validation');
+          } catch {
+              throw new Error(`Invalid response header name: ` + `"${normalizedName}".`);
+          }
+
+          uniqueNames.add(normalizedName);
+      }
+      return [...uniqueNames];
+}
+
+function captureResponseHeaders(responseHeaders: Headers, names: string[]): Record<string, string> {
+    const capturedHeaders: Record<string, string> = {};
+
+    for (const name of names) {
+        const value = responseHeaders.get(name);
+        // A requested header may not exist in every response.
+        if (value !== null) {
+            capturedHeaders[name] = value;
+        }
+    }
+    return capturedHeaders;
 }
 
 function buildHttpErrorMessage(response: Response, data: unknown): string {

@@ -767,6 +767,7 @@
          "URL": "https://jsonplaceholder.typicode.com/posts/1",
          "METHOD": "GET",
          "RESPONSE_TYPE": "json",
+         "CAPTURE_RESPONSE_HEADERS": ["content-type"],
          "TIMEOUT_MS": 10000
        }
      },
@@ -886,7 +887,8 @@
         "STEP_PARAMS": {
           "URL": "https://jsonplaceholder.typicode.com/posts/3",
           "METHOD": "GET",
-          "RESPONSE_TYPE": "text"
+          "RESPONSE_TYPE": "text",
+          "CAPTURE_RESPONSE_HEADERS": ["content-type"]
         }
       },
       {

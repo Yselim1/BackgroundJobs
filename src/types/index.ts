@@ -28,12 +28,13 @@ export interface RestApiStepParams extends StepParams {
     BODY?: unknown;
     TIMEOUT_MS?: number;
     RESPONSE_TYPE?: RestApiResponseType;
+    CAPTURE_RESPONSE_HEADERS?: string[];
 }
 
 export interface RestApiStepOutput {
     status: number;
     statusText: string;
-    headers: Record<string, string>;
+    headers?: Record<string, string>;
     data: unknown;
 }
 
