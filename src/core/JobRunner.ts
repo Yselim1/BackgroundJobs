@@ -66,7 +66,7 @@ export class JobRunner {
             const successfulSteps = new Set<string>();
             const unsuccessfulSteps = new Set<string>();
 
-            let firstFailure: Error | undefined;
+            let representativeFailure: Error | undefined;
 
             for (const step of steps) {
                 pendingSteps.set(step.ID, step);
@@ -135,7 +135,7 @@ export class JobRunner {
                     }
 
                     unsuccessfulSteps.add(result.step.ID);
-                    firstFailure ??= result.reason;
+                    representativeFailure ??= result.reason;
                 }
 
                 if (batchResult.stopRequested) {
@@ -154,8 +154,8 @@ export class JobRunner {
 
             // continue_independent allows independent work to finish, but the job
             // still ends as failed if any step exhausted all retry attempts.
-            if (firstFailure) {
-                throw firstFailure;
+            if (representativeFailure) {
+                throw representativeFailure;
             }
 
             const jobEndTime = new Date();
@@ -172,7 +172,7 @@ export class JobRunner {
             jobLog.status = 'failed';
             jobLog.endTime = jobEndTime.toISOString();
             jobLog.durationMs = jobEndTime.getTime() - jobStartTime.getTime();
-            jobLog.error = resolvedError.message;
+            jobLog.error = this.buildJobErrorMessage(jobLog, resolvedError);
 
             return jobLog;
         }
@@ -664,6 +664,33 @@ export class JobRunner {
         }
 
         return new Error(String(error));
+    }
+
+    private buildJobErrorMessage(jobLog: JobLog, fallbackError: Error): string {
+      const failedSteps = Object.values(jobLog.stepResults).filter(stepResult => stepResult.status === 'failed');
+
+      if (failedSteps.length === 0) {
+          return fallbackError.message;
+      }
+
+      if (failedSteps.length === 1) {
+          const failedStep = failedSteps[0];
+
+          if (!failedStep) {
+              return fallbackError.message;
+          }
+
+          return (`Step "${failedStep.stepName}" ` + `(${failedStep.stepId}) failed: ` + `${failedStep.error ?? fallbackError.message}`);
+      }
+      const displayedSteps = failedSteps.slice(0, 5);
+
+      const stepSummary = displayedSteps.map(step => `"${step.stepName}" (${step.stepId})`).join(', ');
+
+      const remainingCount = failedSteps.length - displayedSteps.length;
+
+      const remainingSummary = remainingCount > 0 ? `, and ${remainingCount} more` : '';
+
+      return (`${failedSteps.length} steps failed: ` + `${stepSummary}${remainingSummary}. ` + 'See stepResults for details.');
     }
 
 }
