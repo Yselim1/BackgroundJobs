@@ -12,6 +12,31 @@ export interface StepParams {
     [key: string]: any;
 }
 
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS';
+
+export type RestApiResponseType = 'auto' | 'json' | 'text';
+
+export type RestApiQueryPrimitive = string | number | boolean | null;
+
+export type RestApiQueryValue = RestApiQueryPrimitive | RestApiQueryPrimitive[];
+
+export interface RestApiStepParams extends StepParams {
+    URL: string;
+    METHOD?: HttpMethod;
+    HEADERS?: Record<string, string>;
+    QUERY?: Record<string, RestApiQueryValue>;
+    BODY?: unknown;
+    TIMEOUT_MS?: number;
+    RESPONSE_TYPE?: RestApiResponseType;
+}
+
+export interface RestApiStepOutput {
+    status: number;
+    statusText: string;
+    headers: Record<string, string>;
+    data: unknown;
+}
+
 export interface Step {
     ORDER: number;
     ID: string;
@@ -23,13 +48,7 @@ export interface Step {
     STEP_PARAMS?: StepParams;
 }
 
-export type StepStatus =
-    | 'pending'
-    | 'running'
-    | 'success'
-    | 'failed'
-    | 'skipped'
-    | 'cancelled';
+export type StepStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped' | 'cancelled';
 
 
 export type StepResult = {
