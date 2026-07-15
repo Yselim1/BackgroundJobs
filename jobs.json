@@ -720,5 +720,264 @@
     }
   ],
   "status": "active"
- }
+ },
+ {
+    "id": "rest-enhanced-get-query",
+    "name": "REST GET Query and Header Test",
+    "schedule": "0 0 1 1 *",
+    "description": "Tests GET, existing and generated query parameters, arrays, headers, and automatic JSON response parsing.",
+    "MAX_CONCURRENCY": 1,
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "echo-get-request",
+        "NAME": "Echo GET request",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://postman-echo.com/get?existing=kept",
+          "METHOD": "GET",
+          "HEADERS": {
+            "X-Framework": "backgroundjobs-framework"
+          },
+          "QUERY": {
+            "framework": "background-jobs",
+            "tag": ["one", "two"],
+            "optional": null
+          },
+          "RESPONSE_TYPE": "auto",
+          "TIMEOUT_MS": 10000
+        }
+      }
+    ],
+    "status": "active"
+ },
+ {
+   "id": "rest-enhanced-post-context",
+   "name": "REST POST Context Test",
+   "schedule": "0 0 1 1 *",
+   "description": "Loads a post, then uses its response in a POST query, header, and JSON body.",
+   "MAX_CONCURRENCY": 1,
+   "STEPS": [
+     {
+       "ORDER": 1,
+       "ID": "load-source-post",
+       "NAME": "Load source post",
+       "TYPE": "RESTAPI",
+       "STEP_PARAMS": {
+         "URL": "https://jsonplaceholder.typicode.com/posts/1",
+         "METHOD": "GET",
+         "RESPONSE_TYPE": "json",
+         "TIMEOUT_MS": 10000
+       }
+     },
+     {
+       "ORDER": 2,
+       "ID": "create-derived-post",
+       "NAME": "Create derived post",
+       "TYPE": "RESTAPI",
+       "DEPENDS_ON": ["load-source-post"],
+       "STEP_PARAMS": {
+         "URL": "https://jsonplaceholder.typicode.com/posts",
+         "METHOD": "POST",
+         "HEADERS": {
+           "X-Source-Post-Id": "{{load-source-post.data.id}}"
+         },
+         "QUERY": {
+           "copiedFrom": "{{load-source-post.data.id}}"
+         },
+         "BODY": {
+           "title": "Copy: {{load-source-post.data.title}}",
+           "body": "{{load-source-post.data.body}}",
+           "userId": "{{load-source-post.data.userId}}"
+         },
+         "RESPONSE_TYPE": "json",
+         "TIMEOUT_MS": 10000
+       }
+     }
+   ],
+   "status": "active"
+ },
+ {
+    "id": "rest-enhanced-crud-context",
+    "name": "REST PUT PATCH DELETE Context Pipeline",
+    "schedule": "0 0 1 1 *",
+    "description": "Tests context interpolation through a GET, PUT, PATCH, and DELETE dependency chain.",
+    "MAX_CONCURRENCY": 1,
+    "FAILURE_POLICY": "fail_fast",
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "load-post-for-update",
+        "NAME": "Load post for update",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://jsonplaceholder.typicode.com/posts/2",
+          "METHOD": "GET",
+          "RESPONSE_TYPE": "json"
+        }
+      },
+      {
+        "ORDER": 2,
+        "ID": "replace-post",
+        "NAME": "Replace post with PUT",
+        "TYPE": "RESTAPI",
+        "DEPENDS_ON": ["load-post-for-update"],
+        "STEP_PARAMS": {
+          "URL": "https://jsonplaceholder.typicode.com/posts/{{load-post-for-update.data.id}}",
+          "METHOD": "PUT",
+          "HEADERS": {
+            "X-Original-User-Id": "{{load-post-for-update.data.userId}}"
+          },
+          "QUERY": {
+            "sourceUserId": "{{load-post-for-update.data.userId}}"
+          },
+          "BODY": {
+            "id": "{{load-post-for-update.data.id}}",
+            "title": "Replaced: {{load-post-for-update.data.title}}",
+            "body": "{{load-post-for-update.data.body}}",
+            "userId": "{{load-post-for-update.data.userId}}"
+          },
+          "RESPONSE_TYPE": "json"
+        }
+      },
+      {
+        "ORDER": 3,
+        "ID": "patch-post",
+        "NAME": "Patch replaced post",
+        "TYPE": "RESTAPI",
+        "DEPENDS_ON": ["replace-post"],
+        "STEP_PARAMS": {
+          "URL": "https://jsonplaceholder.typicode.com/posts/{{replace-post.data.id}}",
+          "METHOD": "PATCH",
+          "BODY": {
+            "title": "Patched: {{replace-post.data.title}}"
+          },
+          "RESPONSE_TYPE": "auto"
+        }
+      },
+      {
+        "ORDER": 4,
+        "ID": "delete-post",
+        "NAME": "Delete patched post",
+        "TYPE": "RESTAPI",
+        "DEPENDS_ON": ["patch-post"],
+        "STEP_PARAMS": {
+          "URL": "https://jsonplaceholder.typicode.com/posts/{{patch-post.data.id}}",
+          "METHOD": "DELETE",
+          "RESPONSE_TYPE": "auto"
+        }
+      }
+    ],
+    "status": "active"
+ },
+ {
+    "id": "rest-enhanced-response-modes",
+    "name": "REST Response Modes and No-Body Test",
+    "schedule": "0 0 1 1 *",
+    "description": "Tests text, JSON, HEAD, and OPTIONS response handling in parallel.",
+    "MAX_CONCURRENCY": 4,
+    "FAILURE_POLICY": "continue_independent",
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "response-as-text",
+        "NAME": "Read JSON response as text",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://jsonplaceholder.typicode.com/posts/3",
+          "METHOD": "GET",
+          "RESPONSE_TYPE": "text"
+        }
+      },
+      {
+        "ORDER": 2,
+        "ID": "response-as-json",
+        "NAME": "Read response as JSON",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://jsonplaceholder.typicode.com/posts/4",
+          "METHOD": "GET",
+          "RESPONSE_TYPE": "json"
+        }
+      },
+      {
+        "ORDER": 3,
+        "ID": "head-no-body",
+        "NAME": "Handle HEAD response",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://jsonplaceholder.typicode.com/posts/1",
+          "METHOD": "HEAD",
+          "RESPONSE_TYPE": "auto"
+        }
+      },
+      {
+        "ORDER": 4,
+        "ID": "options-no-body",
+        "NAME": "Handle OPTIONS response",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://jsonplaceholder.typicode.com/posts/1",
+          "METHOD": "OPTIONS",
+          "RESPONSE_TYPE": "auto"
+        }
+      }
+    ],
+    "status": "active"
+  },
+  {
+    "id": "rest-enhanced-negative-cases",
+    "name": "REST Expected Failure Cases",
+    "schedule": "0 0 1 1 *",
+    "description": "Intentionally fails to test local validation, dependency enforcement, response type validation,and HTTP errors.",
+    "MAX_CONCURRENCY": 4,
+    "FAILURE_POLICY": "continue_independent",
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "get-with-body-error",
+        "NAME": "Reject GET body",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://jsonplaceholder.typicode.com/posts/1",
+          "METHOD": "GET",
+          "BODY": {
+            "invalid": true
+          }
+        }
+      },
+      {
+        "ORDER": 2,
+        "ID": "undeclared-context-error",
+        "NAME": "Reject undeclared context",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://jsonplaceholder.typicode.com/posts/{{missing-step.data.id}}",
+          "METHOD": "GET"
+        }
+      },
+      {
+        "ORDER": 3,
+        "ID": "unsupported-response-type-error",
+        "NAME": "Reject unsupported response type",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://jsonplaceholder.typicode.com/posts/1",
+          "METHOD": "GET",
+          "RESPONSE_TYPE": "xml"
+        }
+      },
+      {
+        "ORDER": 4,
+        "ID": "http-not-found-error",
+        "NAME": "Report HTTP 404",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://jsonplaceholder.typicode.com/posts/999999",
+          "METHOD": "GET",
+          "RESPONSE_TYPE": "auto"
+        }
+      }
+    ]
+  } 
 ]
