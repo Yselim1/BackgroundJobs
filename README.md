@@ -1,4 +1,4 @@
-# Job Framework Usage
+# Background Jobs Framework
 
 ## Overview
 
@@ -8,7 +8,8 @@ It allows you to define jobs in `jobs.json`, execute them through an API, handle
 
 ## Requirements
 
-Install Node.js first.
+- Node.js 24 or newer
+- npm
 
 Visit: https://nodejs.org/en/download/ to download Node.js
 
@@ -82,142 +83,171 @@ Example step fields:
 }
 ```
 
+### Scheduling
+
+`schedule`, `last_run`, and `next_run` in job definitions are currently stored as job metadata.
+
+The framework does not automatically schedule jobs yet. Jobs are started through:
+
+```txt
+POST /api/jobs/:id/run
+```
+
 ### Step Dependencies
 
 Use `DEPENDS_ON` to make a step wait for another step.
-
+Successful step outputs are stored in the job context using the step ID.
 ```json
 {
   "ORDER": 2,
-  "ID": "550e8400-e29b-41d4-a716-446655440002",
+  "ID": "parse-cat-fact",
   "NAME": "Parse cat fact",
   "TYPE": "SCRIPT",
-  "DEPENDS_ON": ["550e8400-e29b-41d4-a716-446655440001"],
+  "DEPENDS_ON": ["fetch-cat-fact"],
   "STEP_PARAMS": {
-    "CODE": "((context) => { const response = context['550e8400-e29b-41d4-a716-446655440001']; return response.data; })"
+    "CODE": "((context) => { const response = context['fetch-cat-fact']; return response.data; })"
+  }
+}
+```
+Steps without dependencies can run independently.
+A step is skipped if one of its dependencies fails, is skipped, or is cancelled.
+
+### Context Templates
+
+REST API steps can use outputs from declared dependency steps:
+
+```json
+{
+  "DEPENDS_ON": ["load-post"],
+  "STEP_PARAMS": {
+    "URL": "https://example.com/posts",
+    "METHOD": "POST",
+    "BODY": {
+      "title": "Copy: {{load-post.data.title}}",
+      "userId": "{{load-post.data.userId}}"
+    }
   }
 }
 ```
 
-Steps without dependencies can run independently.
+An exact template preserves the original value type. Templates inside larger strings produce strings.
 
-## Retry Policy
+The referenced step must be listed in DEPENDS_ON. Step IDs used in templates should not contain dots.
 
-A retry policy can be added to a step.
+## Execution Settings
+
+Jobs support the following execution settings:
+```json
+{
+  "MAX_CONCURRENCY": 2,
+  "FAILURE_POLICY": "continue_independent / fail_fast",
+  "DEFAULT_STEP_RETRY": {
+    "MAX_ATTEMPTS": 3,
+    "DELAY_MS": 1000,
+    "BACKOFF": "fixed"
+  }
+}
+```
+
+- *`MAX_CONCURRENCY:`* controls how many runnable steps can execute at the same time. The default is 10.
+- *`FAILURE_POLICY:`* can be fail_fast or continue_independent. The default is fail_fast.
+- *`fail_fast:`* cancels pending steps after a failure. Steps already running are allowed to finish.
+- *`continue_independent:`* allows independent steps to continue. Steps that depend on a failed step are skipped.
+- *`FAIL_JOB_ON_FAILURE:`* true makes a step stop the job even when continue_independent is used.
+
+### Retry Policy
+
+A step can override the job retry policy:
 
 ```json
 "RETRY": {
-  "COUNT": 3,
-  "DELAY_MS": 1000,
-  "BACKOFF": "exponential"
-}
+   "MAX_ATTEMPTS": 3,
+   "DELAY_MS": 500,
+   "BACKOFF": "exponential"
+ }
 ```
 
-`COUNT` means the number of retries after the first attempt.
+`MAX_ATTEMPTS:` includes the first attempt. A value of 3 means one initial attempt and up to two retries.
 
-Example:
+Supported backoff values are `fixed` and `exponential`.
 
-```txt
-COUNT: 3
+## REST API Steps
+
+Supported methods:
+`
+GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
+`
+
+
+Available parameters:
+```
+URL
+METHOD
+HEADERS
+QUERY
+BODY
+TIMEOUT_MS
+RESPONSE_TYPE
+CAPTURE_RESPONSE_HEADERS
 ```
 
-means:
+`METHOD` defaults to ``GET`` and ``TIMEOUT_MS`` defaults to ``10000``.
 
-```txt
-1 initial attempt + 3 retries = 4 total attempts
-```
+Object and array bodies are sent as JSON. GET and HEAD requests cannot contain a body.
 
-## REST API Timeout
+`RESPONSE_TYPE` supports auto, json, and text.
 
-REST API steps can define a timeout.
-
+A successful request returns:
 ```json
-"STEP_PARAMS": {
-  "URL": "https://httpbin.org/delay/10",
-  "METHOD": "GET",
-  "TIMEOUT_MS": 2000
+{
+  "status": 200,
+  "statusText": "OK",
+  "data": {}
 }
 ```
 
-If the request takes longer than the timeout, the step fails.
+Selected response headers are included when ```CAPTURE_RESPONSE_HEADERS:["content-type",...]``` is provided. Unsuccessful HTTP responses cause
+the step to fail.
+
 
 ## API Endpoints
 
-### Get All Jobs
-
-```http
-GET /api/jobs
-```
-### Get a Single Job
-
-```
-GET /api/jobs/:id
-```
-
-```bash
-curl -X GET http://localhost:3000/api/jobs
-```
-
-### Run a Job
-
-```http
+```txt
+GET  /api/jobs
+GET  /api/jobs/:id
 POST /api/jobs/:id/run
+
+GET  /api/logs
+GET  /api/logs/:id
 ```
 
+Example:
 
 ```bash
 curl -X POST http://localhost:3000/api/jobs/retry-test-001/run
 ```
-
-### Get All Logs
-
-```http
-GET /api/logs
-```
-### Get a Single Log
-
-```
-GET /api/logs/:id
-```
-
-```bash
-curl -X GET http://localhost:3000/api/logs
-```
-
+  
 ## Logs
 
-Execution logs are stored in:
+Execution logs are stored in `logs.json`.
+
+A job log contains its status, duration, step results, and error summary.
+
+Each step result contains its status, attempts, duration, output, error, or skip reason.
+
+Possible step statuses are:
 
 ```txt
-logs.json
+pending
+running
+success
+failed
+skipped
+cancelled
 ```
 
-Each log contains:
+Complete step failure details remain available in `stepResults`.
 
-```txt
-logId
-jobId
-startTime
-endTime
-durationMs
-status
-stepResults
-error
-```
-
-Each step result includes:
-
-```txt
-stepId
-stepName
-stepType
-status
-startedAt
-finishedAt
-durationMs
-output
-error
-```
 
 ## Available Step Types
 
@@ -226,8 +256,31 @@ The executor registry currently supports:
 ```txt
 RESTAPI
 SCRIPT (JavaScript)
-COMMAND (Bash Command)
+COMMAND (Host Operating System Shell)
 PYTHON
 ```
 
 
+## Current Security Limitations
+
+This project is currently a proof of concept and is designed to run trusted job definitions.
+
+Do not expose the server to the public internet or allow untrusted users to create or modify jobs.
+
+The following security limitations currently exist:
+
+- `COMMAND` steps run commands through the host operating system shell. They can execute any command available to the
+server process.
+- `COMMAND` steps inherit the server environment and can define their own working directory and environment variables.
+- `SCRIPT` steps use the Node.js `vm` module. It provides an isolated execution context, but it is not a security
+sandbox for untrusted code.
+- `PYTHON` steps execute Python code with the permissions of the server process.
+- `RESTAPI` steps can send requests to any address reachable by the server, including internal services.
+  
+
+For the current development stage:
+
+- Only use job definitions whose contents you trust and have reviewed.
+- Run the server locally or inside a trusted development environment.
+- Run the server with a non-administrator operating system account.
+- Do not store passwords, API keys, or other secrets directly in `jobs.json`.
