@@ -213,6 +213,8 @@ the step to fail.
 ## API Endpoints
 
 ```txt
+GET  /health
+
 GET  /api/jobs
 GET  /api/jobs/:id
 POST /api/jobs/:id/run
