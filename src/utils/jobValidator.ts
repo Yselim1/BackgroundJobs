@@ -1,6 +1,6 @@
 import {ExecutorRegistry } from '../executors/ExecutorRegistry.js';
 import type{Job, JobValidationResult, ValidationIssue} from '../types/index.js';
-
+import {findDependencyCycle, type DependencyNode} from './jobGraph.js';
 const HTTP_METHODS = new Set([
     'GET',
     'POST',
@@ -119,7 +119,16 @@ export function validateJobDefinition(input: unknown): JobValidationResult {
     }
     
     validateDependencies(rawSteps, stepIds, errors);
+    const dependencyNodes = buildDependencyNodes(rawSteps);
 
+    if (dependencyNodes !== undefined) {
+        const dependencyCycle =
+        findDependencyCycle(dependencyNodes);
+
+        if (dependencyCycle !== undefined) {
+            addIssue(errors, 'STEPS', 'CIRCULAR_DEPENDENCY', `Circular dependency detected: ${dependencyCycle.join(' -> ')}`);
+        }
+    }
     if (errors.length > 0){
         return {
             valid: false,
@@ -132,6 +141,45 @@ export function validateJobDefinition(input: unknown): JobValidationResult {
         errors: [],
         job: normalizedInput as unknown as Job
     };
+}
+
+function buildDependencyNodes(rawSteps: unknown[]): DependencyNode[] | undefined {
+    const nodes: DependencyNode[] = [];
+    const encounteredIds = new Set<string>();
+
+    for (const rawStep of rawSteps) {
+        if (!isRecord(rawStep) || typeof rawStep.ID !== 'string' || rawStep.ID.trim().length === 0) {
+            return undefined;
+        }
+
+        const stepId = rawStep.ID.trim();
+
+        // Graph analysis would be ambiguous when IDs are duplicated.
+        // Duplicate IDs are already reported by the regular validator.
+        if (encounteredIds.has(stepId)) {
+            return undefined;
+        }
+
+        encounteredIds.add(stepId);
+
+        const rawDependencies = rawStep.DEPENDS_ON;
+
+        if (rawDependencies !== undefined && !Array.isArray(rawDependencies)) {
+            return undefined;
+        }
+
+        const dependencies = (rawDependencies ?? []).flatMap(dependency => {
+            if (typeof dependency !== 'string' || dependency.trim().length === 0) {
+                return [];
+            }
+
+            return [dependency.trim()];
+        });
+
+        nodes.push({id: stepId, dependsOn: dependencies});
+    }
+
+    return nodes;
 }
 
 export function assertValidJobDefinition(input: unknown): Job {
@@ -149,6 +197,21 @@ function normalizeJobDefinition(input: unknown): unknown {
         ...input
     };
 
+    if (typeof normalizedJob.id === 'string') {
+          normalizedJob.id = normalizedJob.id.trim();
+    }
+    if (typeof normalizedJob.name === 'string') {
+        normalizedJob.name = normalizedJob.name.trim();
+    }
+    if (typeof normalizedJob.schedule === 'string') {
+        normalizedJob.schedule =
+            normalizedJob.schedule.trim();
+    }
+    if (typeof normalizedJob.status === 'string') {
+        normalizedJob.status =
+            normalizedJob.status.trim();
+    }
+
     if(normalizedJob.status === undefined) {
         normalizedJob.status = 'active';
     }
@@ -163,17 +226,37 @@ function normalizeJobDefinition(input: unknown): unknown {
                 ...rawStep
             };
 
-            if(normalizedStep.ID === undefined && typeof normalizedStep.NAME === 'string' && normalizedStep.NAME.trim().length > 0) {
-                normalizedStep.ID = normalizedStep.NAME.trim();
+            if (typeof normalizedStep.NAME === 'string') {
+                normalizedStep.NAME = normalizedStep.NAME.trim();
             }
 
-            if(normalizedStep.ORDER === undefined) {
+            if (typeof normalizedStep.ID === 'string') {
+                normalizedStep.ID = normalizedStep.ID.trim();
+            }
+
+            if (normalizedStep.ID === undefined && typeof normalizedStep.NAME === 'string' && normalizedStep.NAME.length > 0) {
+                normalizedStep.ID = normalizedStep.NAME;
+            }
+
+            if (typeof normalizedStep.TYPE === 'string') {
+                normalizedStep.TYPE =normalizedStep.TYPE.trim().toUpperCase();
+            }
+
+            if (normalizedStep.ORDER === undefined) {
                 normalizedStep.ORDER = index + 1;
             }
 
+            if (Array.isArray(normalizedStep.DEPENDS_ON)) {
+                normalizedStep.DEPENDS_ON = normalizedStep.DEPENDS_ON.map(dependency => {
+                    if (typeof dependency === 'string') {
+                        return dependency.trim();
+                    }
+                    return dependency;
+                });
+            }
+
             return normalizedStep;
-        }
-        );
+        });
     }
     return normalizedJob;
 }

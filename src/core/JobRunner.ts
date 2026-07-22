@@ -59,7 +59,6 @@ export class JobRunner {
 
             const steps = [...executableJob.STEPS].sort((a, b) => a.ORDER - b.ORDER);
 
-            this.validateSteps(steps);
             const failurePolicy = this.resolveFailurePolicy(executableJob.FAILURE_POLICY);
             const maxConcurrency = this.resolveMaxConcurrency(executableJob.MAX_CONCURRENCY);
 
@@ -593,45 +592,6 @@ export class JobRunner {
     private sleep(ms: number): Promise<void> {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
-
-    private validateSteps(steps: Step[]): void {
-        const stepIds = new Set<string>();
-
-        for (const step of steps) {
-            if (!step.ID) {
-                throw new Error('Step validation failed: ID is required.');
-            }
-
-            if (!step.TYPE) {
-                throw new Error(`Step "${step.ID}" validation failed: TYPE is required.`);
-            }
-
-            if (stepIds.has(step.ID)) {
-                throw new Error(`Duplicate step ID found: "${step.ID}".`);
-            }
-
-            stepIds.add(step.ID);
-        }
-
-        for (const step of steps) {
-            const dependencies = step.DEPENDS_ON ?? [];
-
-            for (const dependency of dependencies) {
-                if (!stepIds.has(dependency)) {
-                    throw new Error(
-                        `Step "${step.ID}" depends on missing step "${dependency}".`
-                    );
-                }
-
-                if (dependency === step.ID) {
-                    throw new Error(
-                        `Step "${step.ID}" cannot depend on itself.`
-                    );
-                }
-            }
-        }
-    }
-
 
     private addStepAttemptLog(
         jobLog: JobLog,

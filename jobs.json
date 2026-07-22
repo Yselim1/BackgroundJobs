@@ -981,5 +981,43 @@
         }
       }
     ]
+  },
+  {
+    "id": "circular-dependency-test",
+    "name": "Circular Dependency Test",
+    "status": "active",
+    "MAX_CONCURRENCY": 2,
+    "STEPS": [
+      {
+        "ID": "step-a",
+        "ORDER": 1,
+        "NAME": "Step A",
+        "TYPE": "SCRIPT",
+        "DEPENDS_ON": ["step-b"],
+        "STEP_PARAMS": {
+          "CODE": "(() => 'A')"
+        }
+      },
+      {
+        "ID": "step-b",
+        "ORDER": 2,
+        "NAME": "Step B",
+        "TYPE": "SCRIPT",
+        "DEPENDS_ON": ["step-c"],
+        "STEP_PARAMS": {
+          "CODE": "(() => 'B')"
+        }
+      },
+      {
+        "ID": "step-c",
+        "ORDER": 3,
+        "NAME": "Step C",
+        "TYPE": "SCRIPT",
+        "DEPENDS_ON": ["step-a"],
+        "STEP_PARAMS": {
+          "CODE": "(() => 'C')"
+        }
+      }
+    ]
   } 
 ]
