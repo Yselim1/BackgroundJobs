@@ -1,5 +1,5 @@
 [
- {
+  {
     "id": "cron-001",
     "name": "Fetch Daily Cat Fact",
     "schedule": "0 9 * * *",
@@ -12,7 +12,8 @@
         "STEP_PARAMS": {
           "URL": "https://catfact.ninja/fact",
           "METHOD": "GET"
-        }
+        },
+        "ID": "FETCH_API"
       },
       {
         "ORDER": 2,
@@ -21,23 +22,27 @@
         "STEP_PARAMS": {
           "URL": "https://randomuser.me/api/?results=1",
           "METHOD": "GET"
-        }
+        },
+        "ID": "FETCH_API_2"
       },
       {
         "ORDER": 3,
         "NAME": "PARSE_RESULT",
         "TYPE": "SCRIPT",
-        "DEPENDS_ON": ["FETCH_API"],
+        "DEPENDS_ON": [
+          "FETCH_API"
+        ],
         "STEP_PARAMS": {
           "CODE": "((context) => { const apiResponse = context.FETCH_API; return { statusCheck: apiResponse.status === 200 ? 'OK' : 'FAIL', factText: apiResponse.data.fact, factLength: apiResponse.data.length }; })"
-        }
+        },
+        "ID": "PARSE_RESULT"
       }
     ],
     "status": "active",
     "last_run": null,
     "next_run": "2026-06-28T09:00:00Z"
- },
- {
+  },
+  {
     "id": "cron-002",
     "name": "User Data Sync Pipeline",
     "schedule": "0 * * * *",
@@ -50,7 +55,8 @@
         "STEP_PARAMS": {
           "URL": "https://randomuser.me/api/?results=1",
           "METHOD": "GET"
-        }
+        },
+        "ID": "FETCH_USERS"
       },
       {
         "ORDER": 2,
@@ -58,7 +64,8 @@
         "TYPE": "SCRIPT",
         "STEP_PARAMS": {
           "CODE": "((context) => { const users = context.FETCH_USERS.data.results; return users.map(u => ({ fullName: u.name.first + ' ' + u.name.last, email: u.email })); })"
-        }
+        },
+        "ID": "TRANSFORM_DATA"
       },
       {
         "ORDER": 3,
@@ -66,14 +73,15 @@
         "TYPE": "COMMAND",
         "STEP_PARAMS": {
           "COMMAND": "echo 'a user successfully synced to the data warehouse'"
-        }
+        },
+        "ID": "FINALIZE_SYNC"
       }
     ],
     "status": "active",
     "last_run": null,
     "next_run": "2026-06-27T15:00:00Z"
- },
- {
+  },
+  {
     "id": "cron-003",
     "name": "Python Data Processing",
     "schedule": "0 12 * * *",
@@ -85,14 +93,15 @@
         "TYPE": "PYTHON",
         "STEP_PARAMS": {
           "CODE": "import json\nimport math\n\nresult = {\n  'status': 'success',\n  'pi_value': math.pi,\n  'calculation': math.sqrt(144)\n}\n\nprint(json.dumps(result))"
-        }
+        },
+        "ID": "MATH_OPERATION"
       }
     ],
     "status": "active",
     "last_run": null,
     "next_run": "2026-06-28T12:00:00Z"
- },
- {
+  },
+  {
     "id": "cron-004",
     "name": "Retry Mechanism Test Job",
     "schedule": "0 0 * * *",
@@ -123,174 +132,182 @@
     "next_run": "2026-06-28T00:00:00Z"
   },
   {
-  "id": "Url-test-001",
-  "name": "Fail Intentionally Job",
-  "schedule": "*/5 * * * *",
-  "description": "Send request to an invalid URL to test error handling.",
-  "STEPS": [
-    {
-      "ORDER": 1,
-      "ID": "550e8400-e29b-41d4-a716-446655440101",
-      "NAME": "Timeout test request",
-      "TYPE": "RESTAPI",
-      "STEP_PARAMS": {
-        "URL": "https://httpbin.org/delay/10",
-        "METHOD": "GET",
-        "TIMEOUT_MS": 2000
+    "id": "Url-test-001",
+    "name": "Fail Intentionally Job",
+    "schedule": "*/5 * * * *",
+    "description": "Send request to an invalid URL to test error handling.",
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "550e8400-e29b-41d4-a716-446655440101",
+        "NAME": "Timeout test request",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://httpbin.org/delay/10",
+          "METHOD": "GET",
+          "TIMEOUT_MS": 2000
+        }
+      },
+      {
+        "ORDER": 2,
+        "ID": "550e8400-e29b-41d4-a716-446655440102",
+        "NAME": "Invalid domain test",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://this-domain-should-not-exist-123456789.com/api",
+          "METHOD": "GET",
+          "TIMEOUT_MS": 5000
+        }
+      },
+      {
+        "ORDER": 3,
+        "ID": "550e8400-e29b-41d4-a716-446655440103",
+        "NAME": "Invalid URL format test",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "not-a-valid-url",
+          "METHOD": "GET",
+          "TIMEOUT_MS": 5000
+        }
+      },
+      {
+        "ORDER": 4,
+        "ID": "550e8400-e29b-41d4-a716-446655440104",
+        "NAME": "HTTP 404 test",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://httpbin.org/status/404",
+          "METHOD": "GET",
+          "TIMEOUT_MS": 5000
+        }
+      },
+      {
+        "ORDER": 5,
+        "ID": "550e8400-e29b-41d4-a716-446655440105",
+        "NAME": "HTTP 500 test",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://httpbin.org/status/500",
+          "METHOD": "GET",
+          "TIMEOUT_MS": 5000
+        }
       }
-    },
-    {
-      "ORDER": 2,
-      "ID": "550e8400-e29b-41d4-a716-446655440102",
-      "NAME": "Invalid domain test",
-      "TYPE": "RESTAPI",
-      "STEP_PARAMS": {
-        "URL": "https://this-domain-should-not-exist-123456789.com/api",
-        "METHOD": "GET",
-        "TIMEOUT_MS": 5000
-      }
-    },
-    {
-      "ORDER": 3,
-      "ID": "550e8400-e29b-41d4-a716-446655440103",
-      "NAME": "Invalid URL format test",
-      "TYPE": "RESTAPI",
-      "STEP_PARAMS": {
-        "URL": "not-a-valid-url",
-        "METHOD": "GET",
-        "TIMEOUT_MS": 5000
-      }
-    },
-    {
-      "ORDER": 4,
-      "ID": "550e8400-e29b-41d4-a716-446655440104",
-      "NAME": "HTTP 404 test",
-      "TYPE": "RESTAPI",
-      "STEP_PARAMS": {
-        "URL": "https://httpbin.org/status/404",
-        "METHOD": "GET",
-        "TIMEOUT_MS": 5000
-      }
-    },
-    {
-      "ORDER": 5,
-      "ID": "550e8400-e29b-41d4-a716-446655440105",
-      "NAME": "HTTP 500 test",
-      "TYPE": "RESTAPI",
-      "STEP_PARAMS": {
-        "URL": "https://httpbin.org/status/500",
-        "METHOD": "GET",
-        "TIMEOUT_MS": 5000
-      }
-    }
-  ],
-  "status": "active",
-  "last_run": null,
-  "next_run": null
+    ],
+    "status": "active",
+    "last_run": null,
+    "next_run": null
   },
   {
-  "id": "command-test-001",
-  "name": "Command Execution Test Job",
-  "schedule": "*/5 * * * *",
-  "description": "Tests command execution and error handling.",
-  "STEPS": [
-    {
-      "ORDER": 1,
-      "ID": "echo-step",
-      "NAME": "Echo Command",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "echo 'Hello, World!'"
+    "id": "command-test-001",
+    "name": "Command Execution Test Job",
+    "schedule": "*/5 * * * *",
+    "description": "Tests command execution and error handling.",
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "echo-step",
+        "NAME": "Echo Command",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "echo 'Hello, World!'"
+        }
+      },
+      {
+        "ORDER": 2,
+        "ID": "failing-command-step",
+        "NAME": "Failing Command",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"process.exit(1)\""
+        }
       }
-    },
-    {
-      "ORDER": 2,
-      "ID": "failing-command-step",
-      "NAME": "Failing Command",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"process.exit(1)\""
-      }
-    }
-  ],
-  "status": "active",
-  "last_run": null,
-  "next_run": null
+    ],
+    "status": "active",
+    "last_run": null,
+    "next_run": null
   },
   {
-  "id": "dag-test-001",
-  "name": "Dependency Test Job",
-  "schedule": "*/5 * * * *",
-  "description": "Tests dependency-based execution.",
-  "MAX_CONCURRENCY": 2,
-  "STEPS": [
-    {
-      "ORDER": 1,
-      "ID": "fetch-cat-fact",
-      "NAME": "Fetch cat fact",
-      "TYPE": "RESTAPI",
-      "STEP_PARAMS": {
-        "URL": "https://catfact.ninja/fact",
-        "METHOD": "GET",
-        "TIMEOUT_MS": 10000
+    "id": "dag-test-001",
+    "name": "Dependency Test Job",
+    "schedule": "*/5 * * * *",
+    "description": "Tests dependency-based execution.",
+    "MAX_CONCURRENCY": 2,
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "fetch-cat-fact",
+        "NAME": "Fetch cat fact",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://catfact.ninja/fact",
+          "METHOD": "GET",
+          "TIMEOUT_MS": 10000
+        }
+      },
+      {
+        "ORDER": 2,
+        "ID": "fetch-random-user",
+        "NAME": "Fetch random user",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://randomuser.me/api/?results=1",
+          "METHOD": "GET"
+        }
+      },
+      {
+        "ORDER": 3,
+        "ID": "parse-cat-fact",
+        "NAME": "Parse cat fact",
+        "TYPE": "SCRIPT",
+        "DEPENDS_ON": [
+          "fetch-cat-fact"
+        ],
+        "STEP_PARAMS": {
+          "CODE": "((context) => { const response = context['fetch-cat-fact']; return { fact: response.data.fact, length: response.data.length }; })"
+        }
+      },
+      {
+        "ORDER": 4,
+        "ID": "parse-random-user",
+        "NAME": "Parse random user",
+        "TYPE": "SCRIPT",
+        "DEPENDS_ON": [
+          "fetch-random-user"
+        ],
+        "STEP_PARAMS": {
+          "CODE": "((context) => { const response = context['fetch-random-user']; const user = response.data.results[0]; return { fullName: `${user.name.first} ${user.name.last}`, email: user.email }; })"
+        }
+      },
+      {
+        "ORDER": 5,
+        "ID": "combine-results",
+        "NAME": "Combine results",
+        "TYPE": "SCRIPT",
+        "DEPENDS_ON": [
+          "parse-cat-fact",
+          "parse-random-user"
+        ],
+        "STEP_PARAMS": {
+          "CODE": "((context) => { return { catFact: context['parse-cat-fact'].fact, user: context['parse-random-user'].fullName }; })"
+        }
       }
-    },
-    {
-      "ORDER": 2,
-      "ID": "fetch-random-user",
-      "NAME": "Fetch random user",
-      "TYPE": "RESTAPI",
-      "STEP_PARAMS": {
-        "URL": "https://randomuser.me/api/?results=1",
-        "METHOD": "GET"
-      }
-    },
-    {
-      "ORDER": 3,
-      "ID": "parse-cat-fact",
-      "NAME": "Parse cat fact",
-      "TYPE": "SCRIPT",
-      "DEPENDS_ON": ["fetch-cat-fact"],
-      "STEP_PARAMS": {
-        "CODE": "((context) => { const response = context['fetch-cat-fact']; return { fact: response.data.fact, length: response.data.length }; })"
-      }
-    },
-    {
-      "ORDER": 4,
-      "ID": "parse-random-user",
-      "NAME": "Parse random user",
-      "TYPE": "SCRIPT",
-      "DEPENDS_ON": ["fetch-random-user"],
-      "STEP_PARAMS": {
-        "CODE": "((context) => { const response = context['fetch-random-user']; const user = response.data.results[0]; return { fullName: `${user.name.first} ${user.name.last}`, email: user.email }; })"
-      }
-    },
-    {
-      "ORDER": 5,
-      "ID": "combine-results",
-      "NAME": "Combine results",
-      "TYPE": "SCRIPT",
-      "DEPENDS_ON": ["parse-cat-fact", "parse-random-user"],
-      "STEP_PARAMS": {
-        "CODE": "((context) => { return { catFact: context['parse-cat-fact'].fact, user: context['parse-random-user'].fullName }; })"
-      }
-    }
-  ],
-  "status": "active",
-  "last_run": null,
-  "next_run": null
+    ],
+    "status": "active",
+    "last_run": null,
+    "next_run": null
   },
   {
-    "id":"test01",
+    "id": "test01",
     "name": "test01",
-    "STEPS":[
+    "STEPS": [
       {
         "ID": "step1",
         "NAME": "cat fact curl",
         "TYPE": "COMMAND",
         "STEP_PARAMS": {
           "COMMAND": "curl -X GET http://localhost:3000/api/jobs/"
-        }
+        },
+        "ORDER": 1
       },
       {
         "ID": "step2",
@@ -299,9 +316,11 @@
         "STEP_PARAMS": {
           "URL": "https://postman-echo.com/post",
           "METHOD": "POST"
-        }
+        },
+        "ORDER": 2
       }
-    ]
+    ],
+    "status": "active"
   },
   {
     "id": "retry-test-001",
@@ -343,385 +362,385 @@
     "status": "active"
   },
   {
-  "id": "test-fail-fast-sequential",
-  "name": "Fail Fast Sequential Test",
-  "schedule": "*/5 * * * *",
-  "MAX_CONCURRENCY": 1,
-  "FAILURE_POLICY": "fail_fast",
-  "DEFAULT_STEP_RETRY": {
-    "MAX_ATTEMPTS": 3,
-    "DELAY_MS": 200,
-    "BACKOFF": "fixed"
-  },
-  "STEPS": [
-    {
-      "ORDER": 1,
-      "ID": "ff-rest-failure",
-      "NAME": "REST failure",
-      "TYPE": "RESTAPI",
-      "STEP_PARAMS": {
-        "URL": "https://httpbin.org/status/200",
-        "METHOD": "GET",
-        "TIMEOUT_MS": 1
-      }
+    "id": "test-fail-fast-sequential",
+    "name": "Fail Fast Sequential Test",
+    "schedule": "*/5 * * * *",
+    "MAX_CONCURRENCY": 1,
+    "FAILURE_POLICY": "fail_fast",
+    "DEFAULT_STEP_RETRY": {
+      "MAX_ATTEMPTS": 3,
+      "DELAY_MS": 200,
+      "BACKOFF": "fixed"
     },
-    {
-      "ORDER": 2,
-      "ID": "ff-command-success",
-      "NAME": "Command that should be cancelled",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"console.log('This should not run')\""
-      }
-    }
-  ],
-  "status": "active"
- },
- {
-  "id": "test-continue-independent",
-  "name": "Continue Independent Test",
-  "schedule": "*/5 * * * *",
-  "MAX_CONCURRENCY": 2,
-  "FAILURE_POLICY": "continue_independent",
-  "DEFAULT_STEP_RETRY": {
-    "MAX_ATTEMPTS": 2,
-    "DELAY_MS": 100,
-    "BACKOFF": "fixed"
-  },
-  "STEPS": [
-    {
-      "ORDER": 1,
-      "ID": "ci-rest-failure",
-      "NAME": "Failing REST step",
-      "TYPE": "RESTAPI",
-      "STEP_PARAMS": {
-        "URL": "https://httpbin.org/status/500",
-        "METHOD": "GET",
-        "TIMEOUT_MS": 5000
-      }
-    },
-    {
-      "ORDER": 2,
-      "ID": "ci-independent-command",
-      "NAME": "Independent successful command",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"console.log('Independent step completed')\""
-      }
-    },
-    {
-      "ORDER": 3,
-      "ID": "ci-dependent-command",
-      "NAME": "Dependent step that should be skipped",
-      "TYPE": "COMMAND",
-      "DEPENDS_ON": [
-        "ci-rest-failure"
-      ],
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"console.log('This should not run')\""
-      }
-    }
-  ],
-  "status": "active"
- },
- {
-  "id": "test-critical-step-failure",
-  "name": "Critical Step Failure Test",
-  "schedule": "*/5 * * * *",
-  "MAX_CONCURRENCY": 1,
-  "FAILURE_POLICY": "continue_independent",
-  "DEFAULT_STEP_RETRY": {
-    "MAX_ATTEMPTS": 2,
-    "DELAY_MS": 100,
-    "BACKOFF": "fixed"
-  },
-  "STEPS": [
-    {
-      "ORDER": 1,
-      "ID": "critical-rest-step",
-      "NAME": "Critical REST failure",
-      "TYPE": "RESTAPI",
-      "FAIL_JOB_ON_FAILURE": true,
-      "RETRY": {
-        "MAX_ATTEMPTS": 3,
-        "DELAY_MS": 200,
-        "BACKOFF": "fixed"
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "ff-rest-failure",
+        "NAME": "REST failure",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://httpbin.org/status/200",
+          "METHOD": "GET",
+          "TIMEOUT_MS": 1
+        }
       },
-      "STEP_PARAMS": {
-        "URL": "https://httpbin.org/status/500",
-        "METHOD": "GET",
-        "TIMEOUT_MS": 5000
+      {
+        "ORDER": 2,
+        "ID": "ff-command-success",
+        "NAME": "Command that should be cancelled",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"console.log('This should not run')\""
+        }
       }
-    },
-    {
-      "ORDER": 2,
-      "ID": "critical-pending-command",
-      "NAME": "Command cancelled by critical failure",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"console.log('This should be cancelled')\""
-      }
-    }
-  ],
-  "status": "active"
- },
- {
-  "id": "test-partial-retry-merge",
-  "name": "Partial Retry Override Merge Test",
-  "schedule": "*/5 * * * *",
-  "MAX_CONCURRENCY": 1,
-  "FAILURE_POLICY": "continue_independent",
-  "DEFAULT_STEP_RETRY": {
-    "MAX_ATTEMPTS": 5,
-    "DELAY_MS": 300,
-    "BACKOFF": "exponential"
+    ],
+    "status": "active"
   },
-  "STEPS": [
-    {
-      "ORDER": 1,
-      "ID": "partial-retry-command",
-      "NAME": "Partial retry override command",
-      "TYPE": "COMMAND",
-      "RETRY": {
-        "MAX_ATTEMPTS": 3
+  {
+    "id": "test-continue-independent",
+    "name": "Continue Independent Test",
+    "schedule": "*/5 * * * *",
+    "MAX_CONCURRENCY": 2,
+    "FAILURE_POLICY": "continue_independent",
+    "DEFAULT_STEP_RETRY": {
+      "MAX_ATTEMPTS": 2,
+      "DELAY_MS": 100,
+      "BACKOFF": "fixed"
+    },
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "ci-rest-failure",
+        "NAME": "Failing REST step",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://httpbin.org/status/500",
+          "METHOD": "GET",
+          "TIMEOUT_MS": 5000
+        }
       },
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"process.exit(1)\""
-      }
-    }
-  ],
-  "status": "active"
- },
- {
-  "id": "test-eventual-retry-success",
-  "name": "Eventual Retry Success Test",
-  "schedule": "*/5 * * * *",
-  "MAX_CONCURRENCY": 1,
-  "FAILURE_POLICY": "fail_fast",
-  "DEFAULT_STEP_RETRY": {
-    "MAX_ATTEMPTS": 5,
-    "DELAY_MS": 200,
-    "BACKOFF": "fixed"
-  },
-  "STEPS": [
-    {
-      "ORDER": 1,
-      "ID": "eventual-success-command",
-      "NAME": "Command succeeds on third attempt",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"const fs=require('fs');const p='.retry-test-eventual-success';let count=fs.existsSync(p)?Number(fs.readFileSync(p,'utf8')):0;count++;if(count<3){fs.writeFileSync(p,String(count));process.exit(1);}if(fs.existsSync(p))fs.unlinkSync(p);console.log('Succeeded on attempt '+count);\""
-      }
-    },
-    {
-      "ORDER": 2,
-      "ID": "after-eventual-success",
-      "NAME": "Runs after retry succeeds",
-      "TYPE": "COMMAND",
-      "DEPENDS_ON": [
-        "eventual-success-command"
-      ],
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"console.log('Dependency succeeded')\""
-      }
-    }
-  ],
-  "status": "active"
- },
- {
-  "id": "test-multiple-dependencies",
-  "name": "Multiple Dependencies Test",
-  "schedule": "*/5 * * * *",
-  "MAX_CONCURRENCY": 2,
-  "FAILURE_POLICY": "continue_independent",
-  "DEFAULT_STEP_RETRY": {
-    "MAX_ATTEMPTS": 2,
-    "DELAY_MS": 100,
-    "BACKOFF": "fixed"
-  },
-  "STEPS": [
-    {
-      "ORDER": 1,
-      "ID": "dependency-a-success",
-      "NAME": "Dependency A succeeds",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"console.log('Dependency A completed')\""
-      }
-    },
-    {
-      "ORDER": 2,
-      "ID": "dependency-b-failure",
-      "NAME": "Dependency B fails",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"process.exit(1)\""
-      }
-    },
-    {
-      "ORDER": 3,
-      "ID": "multiple-dependent-step",
-      "NAME": "Requires both dependencies",
-      "TYPE": "COMMAND",
-      "DEPENDS_ON": [
-        "dependency-a-success",
-        "dependency-b-failure"
-      ],
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"console.log('This should be skipped')\""
-      }
-    },
-    {
-      "ORDER": 4,
-      "ID": "independent-cleanup",
-      "NAME": "Independent cleanup",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"console.log('Independent cleanup completed')\""
-      }
-    }
-  ],
-  "status": "active"
- },
- {
-  "id": "test-fail-fast-concurrent",
-  "name": "Fail Fast Concurrent Test",
-  "schedule": "*/5 * * * *",
-  "MAX_CONCURRENCY": 3,
-  "FAILURE_POLICY": "fail_fast",
-  "DEFAULT_STEP_RETRY": {
-    "MAX_ATTEMPTS": 1,
-    "DELAY_MS": 100,
-    "BACKOFF": "fixed"
-  },
-  "STEPS": [
-    {
-      "ORDER": 1,
-      "ID": "concurrent-slow-success-a",
-      "NAME": "Slow successful command A",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"setTimeout(()=>console.log('A completed'),1000)\""
-      }
-    },
-    {
-      "ORDER": 2,
-      "ID": "concurrent-fast-failure",
-      "NAME": "Fast failing command",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"process.exit(1)\""
-      }
-    },
-    {
-      "ORDER": 3,
-      "ID": "concurrent-slow-success-b",
-      "NAME": "Slow successful command B",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"setTimeout(()=>console.log('B completed'),1000)\""
-      }
-    },
-    {
-      "ORDER": 4,
-      "ID": "concurrent-pending-command",
-      "NAME": "Pending command that should be cancelled",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"console.log('This should not start')\""
-      }
-    }
-  ],
-  "status": "active"
- },
- {
-  "id": "test-fail-fast-concurrent-2",
-  "name": "Fail Fast Concurrent Test",
-  "schedule": "*/5 * * * *",
-  "MAX_CONCURRENCY": 2,
-  "FAILURE_POLICY": "fail_fast",
-  "DEFAULT_STEP_RETRY": {
-    "MAX_ATTEMPTS": 1,
-    "DELAY_MS": 100,
-    "BACKOFF": "fixed"
-  },
-  "STEPS": [
-    {
-      "ORDER": 1,
-      "ID": "concurrent-slow-success-a",
-      "NAME": "Slow successful command A",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"setTimeout(()=>console.log('A completed'),1000)\""
-      }
-    },
-    {
-      "ORDER": 2,
-      "ID": "concurrent-fast-failure",
-      "NAME": "Fast failing command",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"process.exit(1)\""
-      }
-    },
-    {
-      "ORDER": 3,
-      "ID": "concurrent-slow-success-b",
-      "NAME": "Slow successful command B",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"setTimeout(()=>console.log('B completed'),1000)\""
-      }
-    },
-    {
-      "ORDER": 4,
-      "ID": "concurrent-pending-command",
-      "NAME": "Pending command that should be cancelled",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"console.log('This should not start')\""
-      }
-    }
-  ],
-  "status": "active"
- },
- {
-  "id": "test-disable-step-retries",
-  "name": "Disable Step Retries Test",
-  "schedule": "*/5 * * * *",
-  "MAX_CONCURRENCY": 1,
-  "FAILURE_POLICY": "continue_independent",
-  "DEFAULT_STEP_RETRY": {
-    "MAX_ATTEMPTS": 4,
-    "DELAY_MS": 200,
-    "BACKOFF": "fixed"
-  },
-  "STEPS": [
-    {
-      "ORDER": 1,
-      "ID": "single-attempt-command",
-      "NAME": "Command with no retries",
-      "TYPE": "COMMAND",
-      "RETRY": {
-        "MAX_ATTEMPTS": 1
+      {
+        "ORDER": 2,
+        "ID": "ci-independent-command",
+        "NAME": "Independent successful command",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"console.log('Independent step completed')\""
+        }
       },
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"process.exit(1)\""
+      {
+        "ORDER": 3,
+        "ID": "ci-dependent-command",
+        "NAME": "Dependent step that should be skipped",
+        "TYPE": "COMMAND",
+        "DEPENDS_ON": [
+          "ci-rest-failure"
+        ],
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"console.log('This should not run')\""
+        }
       }
+    ],
+    "status": "active"
+  },
+  {
+    "id": "test-critical-step-failure",
+    "name": "Critical Step Failure Test",
+    "schedule": "*/5 * * * *",
+    "MAX_CONCURRENCY": 1,
+    "FAILURE_POLICY": "continue_independent",
+    "DEFAULT_STEP_RETRY": {
+      "MAX_ATTEMPTS": 2,
+      "DELAY_MS": 100,
+      "BACKOFF": "fixed"
     },
-    {
-      "ORDER": 2,
-      "ID": "continues-after-single-attempt",
-      "NAME": "Independent successful command",
-      "TYPE": "COMMAND",
-      "STEP_PARAMS": {
-        "COMMAND": "node -e \"console.log('Continued after failure')\""
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "critical-rest-step",
+        "NAME": "Critical REST failure",
+        "TYPE": "RESTAPI",
+        "FAIL_JOB_ON_FAILURE": true,
+        "RETRY": {
+          "MAX_ATTEMPTS": 3,
+          "DELAY_MS": 200,
+          "BACKOFF": "fixed"
+        },
+        "STEP_PARAMS": {
+          "URL": "https://httpbin.org/status/500",
+          "METHOD": "GET",
+          "TIMEOUT_MS": 5000
+        }
+      },
+      {
+        "ORDER": 2,
+        "ID": "critical-pending-command",
+        "NAME": "Command cancelled by critical failure",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"console.log('This should be cancelled')\""
+        }
       }
-    }
-  ],
-  "status": "active"
- },
- {
+    ],
+    "status": "active"
+  },
+  {
+    "id": "test-partial-retry-merge",
+    "name": "Partial Retry Override Merge Test",
+    "schedule": "*/5 * * * *",
+    "MAX_CONCURRENCY": 1,
+    "FAILURE_POLICY": "continue_independent",
+    "DEFAULT_STEP_RETRY": {
+      "MAX_ATTEMPTS": 5,
+      "DELAY_MS": 300,
+      "BACKOFF": "exponential"
+    },
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "partial-retry-command",
+        "NAME": "Partial retry override command",
+        "TYPE": "COMMAND",
+        "RETRY": {
+          "MAX_ATTEMPTS": 3
+        },
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"process.exit(1)\""
+        }
+      }
+    ],
+    "status": "active"
+  },
+  {
+    "id": "test-eventual-retry-success",
+    "name": "Eventual Retry Success Test",
+    "schedule": "*/5 * * * *",
+    "MAX_CONCURRENCY": 1,
+    "FAILURE_POLICY": "fail_fast",
+    "DEFAULT_STEP_RETRY": {
+      "MAX_ATTEMPTS": 5,
+      "DELAY_MS": 200,
+      "BACKOFF": "fixed"
+    },
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "eventual-success-command",
+        "NAME": "Command succeeds on third attempt",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"const fs=require('fs');const p='.retry-test-eventual-success';let count=fs.existsSync(p)?Number(fs.readFileSync(p,'utf8')):0;count++;if(count<3){fs.writeFileSync(p,String(count));process.exit(1);}if(fs.existsSync(p))fs.unlinkSync(p);console.log('Succeeded on attempt '+count);\""
+        }
+      },
+      {
+        "ORDER": 2,
+        "ID": "after-eventual-success",
+        "NAME": "Runs after retry succeeds",
+        "TYPE": "COMMAND",
+        "DEPENDS_ON": [
+          "eventual-success-command"
+        ],
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"console.log('Dependency succeeded')\""
+        }
+      }
+    ],
+    "status": "active"
+  },
+  {
+    "id": "test-multiple-dependencies",
+    "name": "Multiple Dependencies Test",
+    "schedule": "*/5 * * * *",
+    "MAX_CONCURRENCY": 2,
+    "FAILURE_POLICY": "continue_independent",
+    "DEFAULT_STEP_RETRY": {
+      "MAX_ATTEMPTS": 2,
+      "DELAY_MS": 100,
+      "BACKOFF": "fixed"
+    },
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "dependency-a-success",
+        "NAME": "Dependency A succeeds",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"console.log('Dependency A completed')\""
+        }
+      },
+      {
+        "ORDER": 2,
+        "ID": "dependency-b-failure",
+        "NAME": "Dependency B fails",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"process.exit(1)\""
+        }
+      },
+      {
+        "ORDER": 3,
+        "ID": "multiple-dependent-step",
+        "NAME": "Requires both dependencies",
+        "TYPE": "COMMAND",
+        "DEPENDS_ON": [
+          "dependency-a-success",
+          "dependency-b-failure"
+        ],
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"console.log('This should be skipped')\""
+        }
+      },
+      {
+        "ORDER": 4,
+        "ID": "independent-cleanup",
+        "NAME": "Independent cleanup",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"console.log('Independent cleanup completed')\""
+        }
+      }
+    ],
+    "status": "active"
+  },
+  {
+    "id": "test-fail-fast-concurrent",
+    "name": "Fail Fast Concurrent Test",
+    "schedule": "*/5 * * * *",
+    "MAX_CONCURRENCY": 3,
+    "FAILURE_POLICY": "fail_fast",
+    "DEFAULT_STEP_RETRY": {
+      "MAX_ATTEMPTS": 1,
+      "DELAY_MS": 100,
+      "BACKOFF": "fixed"
+    },
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "concurrent-slow-success-a",
+        "NAME": "Slow successful command A",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"setTimeout(()=>console.log('A completed'),1000)\""
+        }
+      },
+      {
+        "ORDER": 2,
+        "ID": "concurrent-fast-failure",
+        "NAME": "Fast failing command",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"process.exit(1)\""
+        }
+      },
+      {
+        "ORDER": 3,
+        "ID": "concurrent-slow-success-b",
+        "NAME": "Slow successful command B",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"setTimeout(()=>console.log('B completed'),1000)\""
+        }
+      },
+      {
+        "ORDER": 4,
+        "ID": "concurrent-pending-command",
+        "NAME": "Pending command that should be cancelled",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"console.log('This should not start')\""
+        }
+      }
+    ],
+    "status": "active"
+  },
+  {
+    "id": "test-fail-fast-concurrent-2",
+    "name": "Fail Fast Concurrent Test",
+    "schedule": "*/5 * * * *",
+    "MAX_CONCURRENCY": 2,
+    "FAILURE_POLICY": "fail_fast",
+    "DEFAULT_STEP_RETRY": {
+      "MAX_ATTEMPTS": 1,
+      "DELAY_MS": 100,
+      "BACKOFF": "fixed"
+    },
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "concurrent-slow-success-a",
+        "NAME": "Slow successful command A",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"setTimeout(()=>console.log('A completed'),1000)\""
+        }
+      },
+      {
+        "ORDER": 2,
+        "ID": "concurrent-fast-failure",
+        "NAME": "Fast failing command",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"process.exit(1)\""
+        }
+      },
+      {
+        "ORDER": 3,
+        "ID": "concurrent-slow-success-b",
+        "NAME": "Slow successful command B",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"setTimeout(()=>console.log('B completed'),1000)\""
+        }
+      },
+      {
+        "ORDER": 4,
+        "ID": "concurrent-pending-command",
+        "NAME": "Pending command that should be cancelled",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"console.log('This should not start')\""
+        }
+      }
+    ],
+    "status": "active"
+  },
+  {
+    "id": "test-disable-step-retries",
+    "name": "Disable Step Retries Test",
+    "schedule": "*/5 * * * *",
+    "MAX_CONCURRENCY": 1,
+    "FAILURE_POLICY": "continue_independent",
+    "DEFAULT_STEP_RETRY": {
+      "MAX_ATTEMPTS": 4,
+      "DELAY_MS": 200,
+      "BACKOFF": "fixed"
+    },
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "single-attempt-command",
+        "NAME": "Command with no retries",
+        "TYPE": "COMMAND",
+        "RETRY": {
+          "MAX_ATTEMPTS": 1
+        },
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"process.exit(1)\""
+        }
+      },
+      {
+        "ORDER": 2,
+        "ID": "continues-after-single-attempt",
+        "NAME": "Independent successful command",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"console.log('Continued after failure')\""
+        }
+      }
+    ],
+    "status": "active"
+  },
+  {
     "id": "rest-enhanced-get-query",
     "name": "REST GET Query and Header Test",
     "schedule": "0 0 1 1 *",
@@ -741,7 +760,10 @@
           },
           "QUERY": {
             "framework": "background-jobs",
-            "tag": ["one", "two"],
+            "tag": [
+              "one",
+              "two"
+            ],
             "optional": null
           },
           "RESPONSE_TYPE": "auto",
@@ -750,55 +772,59 @@
       }
     ],
     "status": "active"
- },
- {
-   "id": "rest-enhanced-post-context",
-   "name": "REST POST Context Test",
-   "schedule": "0 0 1 1 *",
-   "description": "Loads a post, then uses its response in a POST query, header, and JSON body.",
-   "MAX_CONCURRENCY": 1,
-   "STEPS": [
-     {
-       "ORDER": 1,
-       "ID": "load-source-post",
-       "NAME": "Load source post",
-       "TYPE": "RESTAPI",
-       "STEP_PARAMS": {
-         "URL": "https://jsonplaceholder.typicode.com/posts/1",
-         "METHOD": "GET",
-         "RESPONSE_TYPE": "json",
-         "CAPTURE_RESPONSE_HEADERS": ["content-type"],
-         "TIMEOUT_MS": 10000
-       }
-     },
-     {
-       "ORDER": 2,
-       "ID": "create-derived-post",
-       "NAME": "Create derived post",
-       "TYPE": "RESTAPI",
-       "DEPENDS_ON": ["load-source-post"],
-       "STEP_PARAMS": {
-         "URL": "https://jsonplaceholder.typicode.com/posts",
-         "METHOD": "POST",
-         "HEADERS": {
-           "X-Source-Post-Id": "{{load-source-post.data.id}}"
-         },
-         "QUERY": {
-           "copiedFrom": "{{load-source-post.data.id}}"
-         },
-         "BODY": {
-           "title": "Copy: {{load-source-post.data.title}}",
-           "body": "{{load-source-post.data.body}}",
-           "userId": "{{load-source-post.data.userId}}"
-         },
-         "RESPONSE_TYPE": "json",
-         "TIMEOUT_MS": 10000
-       }
-     }
-   ],
-   "status": "active"
- },
- {
+  },
+  {
+    "id": "rest-enhanced-post-context",
+    "name": "REST POST Context Test",
+    "schedule": "0 0 1 1 *",
+    "description": "Loads a post, then uses its response in a POST query, header, and JSON body.",
+    "MAX_CONCURRENCY": 1,
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "load-source-post",
+        "NAME": "Load source post",
+        "TYPE": "RESTAPI",
+        "STEP_PARAMS": {
+          "URL": "https://jsonplaceholder.typicode.com/posts/1",
+          "METHOD": "GET",
+          "RESPONSE_TYPE": "json",
+          "CAPTURE_RESPONSE_HEADERS": [
+            "content-type"
+          ],
+          "TIMEOUT_MS": 10000
+        }
+      },
+      {
+        "ORDER": 2,
+        "ID": "create-derived-post",
+        "NAME": "Create derived post",
+        "TYPE": "RESTAPI",
+        "DEPENDS_ON": [
+          "load-source-post"
+        ],
+        "STEP_PARAMS": {
+          "URL": "https://jsonplaceholder.typicode.com/posts",
+          "METHOD": "POST",
+          "HEADERS": {
+            "X-Source-Post-Id": "{{load-source-post.data.id}}"
+          },
+          "QUERY": {
+            "copiedFrom": "{{load-source-post.data.id}}"
+          },
+          "BODY": {
+            "title": "Copy: {{load-source-post.data.title}}",
+            "body": "{{load-source-post.data.body}}",
+            "userId": "{{load-source-post.data.userId}}"
+          },
+          "RESPONSE_TYPE": "json",
+          "TIMEOUT_MS": 10000
+        }
+      }
+    ],
+    "status": "active"
+  },
+  {
     "id": "rest-enhanced-crud-context",
     "name": "REST PUT PATCH DELETE Context Pipeline",
     "schedule": "0 0 1 1 *",
@@ -822,7 +848,9 @@
         "ID": "replace-post",
         "NAME": "Replace post with PUT",
         "TYPE": "RESTAPI",
-        "DEPENDS_ON": ["load-post-for-update"],
+        "DEPENDS_ON": [
+          "load-post-for-update"
+        ],
         "STEP_PARAMS": {
           "URL": "https://jsonplaceholder.typicode.com/posts/{{load-post-for-update.data.id}}",
           "METHOD": "PUT",
@@ -846,7 +874,9 @@
         "ID": "patch-post",
         "NAME": "Patch replaced post",
         "TYPE": "RESTAPI",
-        "DEPENDS_ON": ["replace-post"],
+        "DEPENDS_ON": [
+          "replace-post"
+        ],
         "STEP_PARAMS": {
           "URL": "https://jsonplaceholder.typicode.com/posts/{{replace-post.data.id}}",
           "METHOD": "PATCH",
@@ -861,7 +891,9 @@
         "ID": "delete-post",
         "NAME": "Delete patched post",
         "TYPE": "RESTAPI",
-        "DEPENDS_ON": ["patch-post"],
+        "DEPENDS_ON": [
+          "patch-post"
+        ],
         "STEP_PARAMS": {
           "URL": "https://jsonplaceholder.typicode.com/posts/{{patch-post.data.id}}",
           "METHOD": "DELETE",
@@ -870,8 +902,8 @@
       }
     ],
     "status": "active"
- },
- {
+  },
+  {
     "id": "rest-enhanced-response-modes",
     "name": "REST Response Modes and No-Body Test",
     "schedule": "0 0 1 1 *",
@@ -888,7 +920,9 @@
           "URL": "https://jsonplaceholder.typicode.com/posts/3",
           "METHOD": "GET",
           "RESPONSE_TYPE": "text",
-          "CAPTURE_RESPONSE_HEADERS": ["content-type"]
+          "CAPTURE_RESPONSE_HEADERS": [
+            "content-type"
+          ]
         }
       },
       {
@@ -926,5 +960,5 @@
       }
     ],
     "status": "active"
-  } 
+  }
 ]
