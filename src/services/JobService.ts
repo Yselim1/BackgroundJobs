@@ -1,12 +1,13 @@
 import { JobRunner } from '../core/JobRunner.js';
 import { JobLogStore } from '../storage/JobLogStore.js';
-import { readJsonFile, JOBS_FILE } from '../utils/storage.js';
-import { type Job, type JobLog } from '../types/index.js';
+import { JobStore } from '../storage/JobStore.js';
+import {type Job, type JobLog} from '../types/index.js';
 
 export class JobService {
     constructor(
         private readonly jobRunner = new JobRunner(),
-        private readonly jobLogStore = new JobLogStore()
+        private readonly jobLogStore = new JobLogStore(),
+        private readonly jobStore = new JobStore()
     ) {}
 
     async runJob(job: Job): Promise<JobLog> {
@@ -18,18 +19,17 @@ export class JobService {
     }
 
     async getJobWithID(id: string): Promise<Job> {
-        const jobs = await readJsonFile<Job>(JOBS_FILE);
-        const job = jobs.find(j => j.id === id);
-
+        const job = await this.jobStore.getById(id);
         if (!job) {
-            const error = new Error(`Job with id ${id} not found.`) as any;
-            error.statusCode = 404; 
+            const error = new Error(`Job with id ${id} not found.`) as Error & {statusCode: number;};
+            error.statusCode = 404;
             throw error;
         }
         return job;
     }
 
     async getAllJobs(): Promise<Job[]> {
-        return await readJsonFile<Job>(JOBS_FILE);
+        return this.jobStore.getAll();
     }
+    
 }
