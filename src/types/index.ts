@@ -69,19 +69,27 @@ export type StepResult = {
     reason?: string;
 };
 
-
+export type JobStatus = 'active' | 'inactive';
 
 export interface Job {  
     id: string;
     name: string;
-    schedule: string;
+    schedule?: string;
     STEPS: Step[];
-    status: string;
+    status: JobStatus;
     FAILURE_POLICY?: FailurePolicy;
     DEFAULT_STEP_RETRY?: RetryPolicy;
     MAX_CONCURRENCY?: number;
     [key: string]: any; 
 }
+
+export interface ValidationIssue {
+    path: string;
+    code: string;
+    message: string;
+}
+
+export type JobValidationResult ={ valid: true; errors: []; job: Job;} | { valid: false; errors: ValidationIssue[];};
 
 export type StepAttemptStatus = 'success' | 'failed' | 'skipped' | 'cancelled';
 

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { ExecutorRegistry } from '../executors/ExecutorRegistry.js';
 import { type Job, type Step, type JobLog, type RetryPolicy, type RetryBackoff, type StepAttemptLog, type FailurePolicy } from '../types/index.js';
+import { assertValidJobDefinition } from '../utils/jobValidator.js';
 
 type StepExecutionResult = {
     stepId: string;
@@ -50,15 +51,17 @@ export class JobRunner {
         };
 
         try {
-            if (!job.STEPS || job.STEPS.length === 0) {
-                throw new Error(`Job "${job.id}" has no STEPS to execute.`);
+            const executableJob = assertValidJobDefinition(job);
+            jobLog.jobId = executableJob.id;
+            if (!executableJob.STEPS || executableJob.STEPS.length === 0) {
+                throw new Error(`Job "${executableJob.id}" has no STEPS to execute.`);
             }
 
-            const steps = [...job.STEPS].sort((a, b) => a.ORDER - b.ORDER);
+            const steps = [...executableJob.STEPS].sort((a, b) => a.ORDER - b.ORDER);
 
             this.validateSteps(steps);
-            const failurePolicy = this.resolveFailurePolicy(job.FAILURE_POLICY);
-            const maxConcurrency = this.resolveMaxConcurrency(job.MAX_CONCURRENCY);
+            const failurePolicy = this.resolveFailurePolicy(executableJob.FAILURE_POLICY);
+            const maxConcurrency = this.resolveMaxConcurrency(executableJob.MAX_CONCURRENCY);
 
             const context: Record<string, any> = {};
             const pendingSteps = new Map<string, Step>();
@@ -118,7 +121,7 @@ export class JobRunner {
                         step,
                         context,
                         jobLog,
-                        job.DEFAULT_STEP_RETRY
+                        executableJob.DEFAULT_STEP_RETRY
                     ),
                     step => this.shouldStopJobAfterFailure(step, failurePolicy)
                 );
