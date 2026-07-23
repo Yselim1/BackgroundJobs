@@ -4,7 +4,7 @@
 
 This project is a Node.js and TypeScript based background job framework.
 
-It allows you to define jobs in `jobs.json`, execute them through an API, handle step dependencies, retry failed steps, and store execution logs in `logs.json`.
+It allows you to validate and manage job definitions through an API, execute jobs asynchronously, inspect dependency-based execution plans, retry failed steps, and access live or completed execution logs.
 
 ## Requirements
 
@@ -65,6 +65,13 @@ Jobs are stored in:
 ```txt
 jobs.json
 ```
+Job definitions can be created, replaced, and deleted through the API without restarting the server.
+
+Definitions are normalized and validated before storage or execution. Invalid dependencies and circular dependency
+graphs are rejected.
+
+JSON mutations are serialized and written atomically within a single Node.js process. This storage is not designed for
+multiple server processes writing to the same files.
 
 Each job can contain multiple steps.
 
@@ -213,29 +220,45 @@ the step to fail.
 ## API Endpoints
 
 ```txt
-GET  /health
+GET    /health
 
-GET  /api/jobs
-GET  /api/jobs/:id
-POST /api/jobs/:id/run
+GET    /api/jobs
+POST   /api/jobs/validate
+POST   /api/jobs
+GET    /api/jobs/:id
+GET    /api/jobs/:id/plan
+PUT    /api/jobs/:id
+DELETE /api/jobs/:id
+POST   /api/jobs/:id/run
 
-GET  /api/logs
-GET  /api/logs/:id
+GET    /api/logs
+GET    /api/logs/:id
 ```
 
-Example:
+`GET /api/jobs/:id/plan` returns dependency-based execution levels without running the job.
+
+Starting a job returns 202 Accepted, a logId, and a Location header:
 
 ```bash
-curl -X POST http://localhost:3000/api/jobs/retry-test-001/run
+curl -X POST http://localhost:3000/api/jobs/example-job/run
 ```
+
+Use the returned log ID to read its progress:
+```bash
+curl http://localhost:3000/api/logs/LOG_ID
+```
+
+A job cannot be started again, replaced, or deleted while it is running. These operations return 409 Conflict.
   
 ## Logs
 
-Execution logs are stored in `logs.json`.
+Active execution logs are kept in memory and can be read through `GET /api/logs/:id`.
 
-A job log contains its status, duration, step results, and error summary.
+Completed logs are stored in `logs.json`. The same endpoint continues to work after the execution finishes.
 
-Each step result contains its status, attempts, duration, output, error, or skip reason.
+A job log contains its status, duration, step results, attempts, outputs, errors, and skip reasons.
+
+Active execution state is not recovered after a server restart.
 
 Possible step statuses are:
 
@@ -271,6 +294,7 @@ Do not expose the server to the public internet or allow untrusted users to crea
 
 The following security limitations currently exist:
 
+- The API has no authentication or authorization. Job creation, replacement, deletion, and execution endpoints must only be accessible to trusted users.
 - `COMMAND` steps run commands through the host operating system shell. They can execute any command available to the
 server process.
 - `COMMAND` steps inherit the server environment and can define their own working directory and environment variables.
