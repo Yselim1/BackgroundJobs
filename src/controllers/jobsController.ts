@@ -29,8 +29,18 @@ router.post('/', async (req: Request, res: Response ): Promise<void> => {
     } catch (error: unknown) {
         sendControllerError(res, error);
     }
+});
+
+router.get('/:id/plan', async (req: Request, res: Response): Promise<void> => {
+    try {
+        const jobId = req.params.id as string;
+        const plan = await jobService.getExecutionPlan(jobId);
+
+        res.status(200).json(plan);
+    } catch (error: unknown) {
+        sendControllerError(res, error);
     }
-);
+});
 
 router.get('/:id', async (req: Request, res: Response): Promise<void> => {
     try {

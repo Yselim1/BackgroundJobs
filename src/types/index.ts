@@ -83,6 +83,26 @@ export interface Job {
     [key: string]: any; 
 }
 
+export interface JobExecutionPlanStep {
+    id: string;
+    name: string;
+    type: string;
+    order: number;
+    dependsOn: string[];
+}
+
+export interface JobExecutionPlanLevel {
+    level: number;
+    steps: JobExecutionPlanStep[];
+}
+
+export interface JobExecutionPlan {
+    jobId: string;
+    maxConcurrency: number;
+    failurePolicy: FailurePolicy;
+    levels: JobExecutionPlanLevel[];
+}
+
 export interface ValidationIssue {
     path: string;
     code: string;

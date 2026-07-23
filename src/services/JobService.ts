@@ -1,8 +1,9 @@
 import { JobRunner } from '../core/JobRunner.js';
 import { JobLogStore } from '../storage/JobLogStore.js';
 import { JobStore } from '../storage/JobStore.js';
-import {type Job, type JobLog, type JobValidationResult} from '../types/index.js';
+import {type Job, type JobLog, type JobValidationResult, type JobExecutionPlan, type Step} from '../types/index.js';
 import {assertValidJobDefinition, JobValidationError, validateJobDefinition} from '../utils/jobValidator.js';
+import { buildDependencyLevels } from '../utils/jobGraph.js';
 
 export type JobServiceErrorCode = 'JOB_NOT_FOUND' | 'JOB_ALREADY_EXISTS';
 
@@ -76,15 +77,36 @@ export class JobService {
     async getJobWithID(id: string): Promise<Job> {
         const job = await this.jobStore.getById(id);
         if (!job) {
-            const error = new Error(`Job with id ${id} not found.`) as Error & {statusCode: number;};
-            error.statusCode = 404;
-            throw error;
+            throw new JobServiceError(`Job with id ${id} not found.`, 404, 'JOB_NOT_FOUND');
         }
         return job;
     }
 
     async getAllJobs(): Promise<Job[]> {
         return this.jobStore.getAll();
+    }
+
+    async getExecutionPlan(jobId: string): Promise<JobExecutionPlan> {
+        const job = await this.getJobWithID(jobId);
+
+        const sortedSteps = [...job.STEPS].sort((firstStep, secondStep) => firstStep.ORDER - secondStep.ORDER);
+
+        const stepsById = new Map(sortedSteps.map(step => [step.ID, step]));
+
+        const dependencyLevels = buildDependencyLevels(sortedSteps.map(step => ({id: step.ID,dependsOn: step.DEPENDS_ON ?? []})));
+
+        return {
+            jobId: job.id,
+            maxConcurrency: job.MAX_CONCURRENCY ?? 10,
+            failurePolicy: job.FAILURE_POLICY ?? 'fail_fast',
+            levels: dependencyLevels.map((stepIds, index) => {const levelSteps = stepIds.map(stepId => stepsById.get(stepId))
+                .filter((step): step is Step => step !== undefined)
+                .sort((firstStep, secondStep) =>firstStep.ORDER - secondStep.ORDER);
+            return {
+                level: index + 1,
+                steps: levelSteps.map(step => ({id: step.ID, name: step.NAME, type: step.TYPE, order: step.ORDER, dependsOn: step.DEPENDS_ON ?? []}))
+            };})
+        };
     }
 
 }
