@@ -37,13 +37,21 @@ type BatchExecutionResult =
         stopReason: Error;
     };
 
+export type JobProgressCallback = (jobLog: JobLog) => void
+
+export interface JobRunOptions {
+    logId?: string;
+    startTime?: Date;
+    onProgress?: JobProgressCallback;
+}
+
 export class JobRunner {
     
-    async run(job: Job): Promise<JobLog> {
-        const jobStartTime = new Date();
+    async run(job: Job, options: JobRunOptions = {}): Promise<JobLog> {
+        const jobStartTime = options.startTime ? new Date(options.startTime.getTime()) : new Date();
 
         const jobLog: JobLog = {
-            logId: randomUUID(),
+            logId: options.logId ?? randomUUID(),
             jobId: job.id,
             startTime: jobStartTime.toISOString(),
             status: 'running',
@@ -81,6 +89,7 @@ export class JobRunner {
                     attempts: []
                 };
             }
+            this.emitProgress(jobLog, options.onProgress);
 
             while (pendingSteps.size > 0) {
                 
@@ -89,7 +98,8 @@ export class JobRunner {
                 this.markDependencyBlockedStepsAsSkipped(
                     pendingSteps,
                     unsuccessfulSteps,
-                    jobLog
+                    jobLog,
+                    options.onProgress
                 )
 
                 if (pendingSteps.size === 0) {
@@ -120,7 +130,8 @@ export class JobRunner {
                         step,
                         context,
                         jobLog,
-                        executableJob.DEFAULT_STEP_RETRY
+                        executableJob.DEFAULT_STEP_RETRY,
+                        options.onProgress
                     ),
                     step => this.shouldStopJobAfterFailure(step, failurePolicy)
                 );
@@ -147,7 +158,8 @@ export class JobRunner {
                         pendingSteps,
                         unsuccessfulSteps,
                         jobLog,
-                        `Job cancelled by failure policy: ${reason.message}`
+                        `Job cancelled by failure policy: ${reason.message}`,
+                        options.onProgress
                     );
 
                     throw reason;
@@ -166,6 +178,8 @@ export class JobRunner {
             jobLog.endTime = jobEndTime.toISOString();
             jobLog.durationMs = jobEndTime.getTime() - jobStartTime.getTime();
 
+            this.emitProgress(jobLog, options.onProgress);
+
             return jobLog;
         } catch (error: unknown) {
             const jobEndTime = new Date();
@@ -176,6 +190,8 @@ export class JobRunner {
             jobLog.durationMs = jobEndTime.getTime() - jobStartTime.getTime();
             jobLog.error = this.buildJobErrorMessage(jobLog, resolvedError);
 
+            this.emitProgress(jobLog, options.onProgress);
+
             return jobLog;
         }
     }
@@ -184,7 +200,8 @@ export class JobRunner {
         step: Step,
         context: Record<string, any>,
         jobLog: JobLog,
-        defaultStepRetry?: RetryPolicy
+        defaultStepRetry?: RetryPolicy,
+        onProgress?: JobProgressCallback
     ): Promise<StepExecutionResult> {
         const stepStartTime = new Date();
 
@@ -198,6 +215,8 @@ export class JobRunner {
             startedAt: stepStartTime.toISOString(),
             attempts: existingAttempts
         };
+        
+        this.emitProgress(jobLog, onProgress);
 
         try {
             console.log(`[JOB_RUNNER] Starting step "${step.NAME}"`);
@@ -206,7 +225,8 @@ export class JobRunner {
                 step,
                 context,
                 jobLog,
-                defaultStepRetry
+                defaultStepRetry,
+                onProgress
             );
 
             const stepEndTime = new Date();
@@ -224,6 +244,8 @@ export class JobRunner {
                 attempts,
                 output
             };
+
+            this.emitProgress(jobLog, onProgress);
 
             console.log(`[JOB_RUNNER] Step "${step.NAME}" completed`);
 
@@ -247,6 +269,8 @@ export class JobRunner {
                 attempts,
                 error: resolvedError.message
             };
+
+            this.emitProgress(jobLog, onProgress);
 
             console.error(`[JOB_RUNNER] Step "${step.NAME}" failed`, resolvedError);
 
@@ -356,7 +380,8 @@ export class JobRunner {
         step: Step,
         context: Record<string, any>,
         jobLog: JobLog,
-        defaultStepRetry?: RetryPolicy
+        defaultStepRetry?: RetryPolicy,
+        onProgress?: JobProgressCallback
     ): Promise<any> {
         const executor = ExecutorRegistry.getExecutor(step.TYPE);
 
@@ -389,7 +414,9 @@ export class JobRunner {
                     startedAt: attemptStartTime.toISOString(),
                     finishedAt: attemptEndTime.toISOString(),
                     durationMs: attemptEndTime.getTime() - attemptStartTime.getTime()
-                });
+                    },
+                    onProgress
+                );
 
                 return output;
             } catch (error: unknown) {
@@ -404,7 +431,9 @@ export class JobRunner {
                     finishedAt: attemptEndTime.toISOString(),
                     durationMs: attemptEndTime.getTime() - attemptStartTime.getTime(),
                     error: lastError.message
-                });
+                    },
+                    onProgress
+                );
 
                 const isLastAttempt = attempt === retryPolicy.MAX_ATTEMPTS;
 
@@ -494,7 +523,8 @@ export class JobRunner {
     private markDependencyBlockedStepsAsSkipped(
         pendingSteps: Map<string, Step>,
         unsuccessfulSteps: Set<string>,
-        jobLog: JobLog
+        jobLog: JobLog,
+        onProgress?: JobProgressCallback
     ): void {
         let changed: boolean;
 
@@ -513,7 +543,8 @@ export class JobRunner {
                 this.markStepAsSkipped(
                     jobLog,
                     step,
-                    `Skipped because dependencies did not succeed: ${blockingDependencies.join(', ')}`
+                    `Skipped because dependencies did not succeed: ${blockingDependencies.join(', ')}`,
+                    onProgress
                 );
 
                 pendingSteps.delete(stepId);
@@ -527,10 +558,11 @@ export class JobRunner {
         pendingSteps: Map<string, Step>,
         unsuccessfulSteps: Set<string>,
         jobLog: JobLog,
-        reason: string
+        reason: string,
+        onProgress?: JobProgressCallback
     ): void {
         for (const [stepId, step] of pendingSteps) {
-            this.markStepAsCancelled(jobLog, step, reason);
+            this.markStepAsCancelled(jobLog, step, reason, onProgress);
             unsuccessfulSteps.add(stepId);
         }
 
@@ -540,7 +572,8 @@ export class JobRunner {
     private markStepAsSkipped(
         jobLog: JobLog,
         step: Step,
-        reason: string
+        reason: string,
+        onProgress?: JobProgressCallback
     ): void {
         const currentStepLog = jobLog.stepResults[step.ID];
         const now = new Date();
@@ -555,12 +588,15 @@ export class JobRunner {
             attempts: currentStepLog?.attempts ?? [],
             reason
         };
+
+        this.emitProgress(jobLog, onProgress);
     }
 
     private markStepAsCancelled(
         jobLog: JobLog,
         step: Step,
-        reason: string
+        reason: string,
+        onProgress?: JobProgressCallback
     ): void {
         const currentStepLog = jobLog.stepResults[step.ID];
         const now = new Date();
@@ -575,6 +611,8 @@ export class JobRunner {
             attempts: currentStepLog?.attempts ?? [],
             reason
         };
+
+        this.emitProgress(jobLog, onProgress);
     }
 
     private calculateRetryDelay(
@@ -596,7 +634,8 @@ export class JobRunner {
     private addStepAttemptLog(
         jobLog: JobLog,
         step: Step,
-        attemptLog: StepAttemptLog
+        attemptLog: StepAttemptLog,
+        onProgress?: JobProgressCallback
     ): void {
         const currentStepLog = jobLog.stepResults[step.ID];
 
@@ -608,7 +647,7 @@ export class JobRunner {
                 status: 'running',
                 attempts: [attemptLog]
             };
-
+            this.emitProgress(jobLog, onProgress);    
             return;
         }
 
@@ -619,6 +658,7 @@ export class JobRunner {
                 attemptLog
             ]
         };
+        this.emitProgress(jobLog, onProgress);
     }
     
     private toError(error: unknown): Error {
@@ -656,4 +696,15 @@ export class JobRunner {
       return (`${failedSteps.length} steps failed: ` + `${stepSummary}${remainingSummary}. ` + 'See stepResults for details.');
     }
 
+    private emitProgress(jobLog: JobLog, onProgress?: JobProgressCallback): void {
+      if (!onProgress) return;
+
+      try {
+        onProgress(structuredClone(jobLog));
+      } catch (error: unknown) {
+        const resolvedError = this.toError(error);
+
+        console.error('[JOB_RUNNER] Progress callback failed:', resolvedError);
+      }
+    }
 }

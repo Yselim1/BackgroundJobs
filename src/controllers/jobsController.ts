@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { JobService, JobServiceError } from '../services/JobService.js';
 import { JobValidationError } from '../utils/jobValidator.js';
+import { JobExecutionManagerError} from '../services/JobExecutionManager.js';
 
 const router = Router();
 const jobService = new JobService();
@@ -78,23 +79,17 @@ router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
 router.post('/:id/run', async (req: Request, res: Response): Promise<void> => {
     try {
         const jobId = req.params.id as string;
-        const job = await jobService.getJobWithID(jobId);
+        const initialLog = await jobService.startJob(jobId);
 
-        if (!job) {
-            res.status(404).json({
-                error: `Job with id ${jobId} not found.`
-            });
-            return;
-        }
-
-        const log = await jobService.runJob(job);
-
-        res.status(log.status === 'success' ? 200 : 500).json({
-            message: `Job ${jobId} execution completed with status: ${log.status}.`,
-            log
-        });
+        res.status(202).location(`/api/logs/${initialLog.logId}`).json({
+            message: `Job ${jobId} execution started.`,
+            logId: initialLog.logId,
+            jobId: initialLog.jobId,
+            status: initialLog.status,
+            startTime: initialLog.startTime
+        })
     } catch (error: any) {
-        res.status(error.statusCode || 500).json({ error: error.message });
+        sendControllerError(res, error);
     }
 });
 
@@ -108,6 +103,12 @@ function sendControllerError( res: Response, error: unknown): void {
         res.status(error.statusCode).json({error: error.message, code: error.code});
         return;
     }
+
+    if (error instanceof JobExecutionManagerError) {
+        res.status(error.statusCode).json({ error: error.message, code: error.code});
+      return;
+    }
+    
     const message = error instanceof Error ? error.message : String(error);
 
     res.status(500).json({error: message});

@@ -1,9 +1,8 @@
-import { JobRunner } from '../core/JobRunner.js';
-import { JobLogStore } from '../storage/JobLogStore.js';
 import { JobStore } from '../storage/JobStore.js';
 import {type Job, type JobLog, type JobValidationResult, type JobExecutionPlan, type Step} from '../types/index.js';
 import {assertValidJobDefinition, JobValidationError, validateJobDefinition} from '../utils/jobValidator.js';
 import { buildDependencyLevels } from '../utils/jobGraph.js';
+import {jobExecutionManager as sharedJobExecutionManager, type JobExecutionManager, JobExecutionManagerError} from './JobExecutionManager.js';
 
 export type JobServiceErrorCode = 'JOB_NOT_FOUND' | 'JOB_ALREADY_EXISTS';
 
@@ -20,9 +19,8 @@ export class JobServiceError extends Error {
 
 export class JobService {
     constructor(
-        private readonly jobRunner = new JobRunner(),
-        private readonly jobLogStore = new JobLogStore(),
-        private readonly jobStore = new JobStore()
+        private readonly jobStore = new JobStore(),
+        private readonly executionManager:JobExecutionManager = sharedJobExecutionManager
     ) {}
 
     validateJob(input: unknown): JobValidationResult {
@@ -50,6 +48,7 @@ export class JobService {
                 }
             ]);
         }
+        this.assertJobCanBeModified(jobId, 'update');
 
         const replaced = await this.jobStore.replace(jobId, replacement);
         if (!replaced) {
@@ -60,18 +59,16 @@ export class JobService {
     }
 
     async deleteJob(jobId: string): Promise<void> {
+        this.assertJobCanBeModified(jobId, 'delete');
         const deleted = await this.jobStore.deleteById(jobId);
         if (!deleted) {
             throw new JobServiceError(`Job with id ${jobId} not found.`, 404, 'JOB_NOT_FOUND');
         }
     }
 
-    async runJob(job: Job): Promise<JobLog> {
-        const log = await this.jobRunner.run(job);
-
-        await this.jobLogStore.append(log);
-
-        return log;
+    async startJob(jobId: string): Promise<JobLog> {
+      const job = await this.getJobWithID(jobId);
+      return this.executionManager.start(job);
     }
 
     async getJobWithID(id: string): Promise<Job> {
@@ -107,6 +104,16 @@ export class JobService {
                 steps: levelSteps.map(step => ({id: step.ID, name: step.NAME, type: step.TYPE, order: step.ORDER, dependsOn: step.DEPENDS_ON ?? []}))
             };})
         };
+    }
+
+    private assertJobCanBeModified(jobId: string, operation: 'update' | 'delete'): void {
+        if (!this.executionManager.isJobRunning(jobId)) return;
+
+        throw new JobExecutionManagerError(
+          `Cannot ${operation} job with id ${jobId} ` +
+          'while it is running.',
+          409,
+          'JOB_IS_RUNNING');
     }
 
 }

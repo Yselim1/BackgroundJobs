@@ -960,5 +960,93 @@
       }
     ],
     "status": "active"
+  },
+  {
+    "id": "async-progress-test",
+    "name": "Async Progress Test",
+    "status": "active",
+    "MAX_CONCURRENCY": 2,
+    "FAILURE_POLICY": "fail_fast",
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "wait-first",
+        "NAME": "Wait First",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"setTimeout(() => console.log('first complete'), 5000)\"",
+          "TIMEOUT_MS": 10000
+        }
+      },
+      {
+        "ORDER": 2,
+        "ID": "wait-second",
+        "NAME": "Wait Second",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"setTimeout(() => console.log('second complete'), 5000)\"",
+          "TIMEOUT_MS": 10000
+        }
+      },
+      {
+        "ORDER": 3,
+        "ID": "after-waits",
+        "NAME": "Run After Waits",
+        "TYPE": "COMMAND",
+        "DEPENDS_ON": [
+          "wait-first",
+          "wait-second"
+        ],
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"console.log('dependent step complete')\""
+        }
+      }
+    ]
+  },
+  {
+    "id": "async-failure-test",
+    "name": "Async Failure Test",
+    "status": "active",
+    "MAX_CONCURRENCY": 2,
+    "FAILURE_POLICY": "continue_independent",
+    "STEPS": [
+      {
+        "ORDER": 1,
+        "ID": "always-fails",
+        "NAME": "Always Fails",
+        "TYPE": "COMMAND",
+        "RETRY": {
+          "MAX_ATTEMPTS": 2,
+          "DELAY_MS": 5000,
+          "BACKOFF": "fixed"
+        },
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"setTimeout(() => { console.error('intentional failure'); process.exit(1); }, 10000)\"",
+          "TIMEOUT_MS": 15000
+        }
+      },
+      {
+        "ORDER": 2,
+        "ID": "independent-wait",
+        "NAME": "Independent Wait",
+        "TYPE": "COMMAND",
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"setTimeout(() => console.log('independent complete'), 30000)\"",
+          "TIMEOUT_MS": 45000
+        }
+      },
+      {
+        "ORDER": 3,
+        "ID": "depends-on-failure",
+        "NAME": "Depends On Failure",
+        "TYPE": "COMMAND",
+        "DEPENDS_ON": [
+          "always-fails"
+        ],
+        "STEP_PARAMS": {
+          "COMMAND": "node -e \"console.log('this should not execute')\""
+        }
+      }
+    ]
   }
 ]
