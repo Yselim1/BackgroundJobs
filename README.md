@@ -10,10 +10,10 @@ Requirements: Node.js 24+, npm, Docker, and Docker Compose.
 
 ```bash
 npm install
-docker compose up -d postgres
-npm run migrate
 npm run dev
 ```
+
+`npm run dev` starts the Compose PostgreSQL service, waits until it is healthy, applies any pending migrations, and then starts the backend watcher. Docker must already be running. To start only the backend watcher when PostgreSQL is managed separately, use `npm run dev:server`.
 
 The default connection is `postgres://postgres:postgres@localhost:5432/backgroundjobs`; copy `.env.example` into your environment when different values are needed. Environment variables are not automatically loaded from a file.
 

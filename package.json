@@ -14,7 +14,10 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "db:start": "docker compose up -d --wait postgres",
+    "dev:setup": "npm run db:start && npm run migrate",
+    "dev:server": "tsx watch src/index.ts",
+    "dev": "npm run dev:setup && npm run dev:server",
     "build": "tsc",
     "start": "node dist/index.js",
     "migrate": "tsx src/db/migrate.ts",
