@@ -30,8 +30,11 @@ export class JobRepository {
         return result.rows[0] === undefined ? undefined : mapJob(result.rows[0]);
     }
 
-    async create(job: Job, now = new Date()): Promise<JobView> {
-        const nextRunAt = scheduledNextRun(job, now);
+    async create(job: Job, now?: Date): Promise<JobView> {
+        const effectiveNow = now ?? (await this.pool.query<{ now: Date }>(
+            'SELECT clock_timestamp() AS now'
+        )).rows[0]!.now;
+        const nextRunAt = scheduledNextRun(job, effectiveNow);
         try {
             const result = await this.pool.query<JobRow>(
                 `INSERT INTO jobs(id, definition, status, schedule, timezone, next_run_at)
@@ -48,8 +51,11 @@ export class JobRepository {
         }
     }
 
-    async replace(jobId: string, replacement: Job, now = new Date()): Promise<JobView> {
+    async replace(jobId: string, replacement: Job, now?: Date): Promise<JobView> {
         return withTransaction(this.pool, async client => {
+            const effectiveNow = now ?? (await client.query<{ now: Date }>(
+                'SELECT clock_timestamp() AS now'
+            )).rows[0]!.now;
             const current = await client.query('SELECT id FROM jobs WHERE id = $1 FOR UPDATE', [jobId]);
             if (current.rowCount === 0) throw new AppError('JOB_NOT_FOUND', `Job with id ${jobId} not found.`, 404);
             const active = await client.query(
@@ -64,7 +70,7 @@ export class JobRepository {
                     next_run_at = $6, updated_at = clock_timestamp()
                  WHERE id = $1
                  RETURNING definition, last_run_at, next_run_at, created_at, updated_at`,
-                [jobId, replacement, replacement.status, replacement.schedule ?? null, replacement.timezone, scheduledNextRun(replacement, now)]
+                [jobId, replacement, replacement.status, replacement.schedule ?? null, replacement.timezone, scheduledNextRun(replacement, effectiveNow)]
             );
             return mapJob(result.rows[0]!);
         });

@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import { AppError } from '../errors.js';
 import { JobService } from '../services/JobService.js';
 
 export function createJobsController(jobService: JobService): Router {
@@ -15,7 +16,7 @@ export function createJobsController(jobService: JobService): Router {
     router.put('/:id', route(async (req, res) => { res.status(200).json(await jobService.replaceJob(req.params.id as string, req.body)); }));
     router.delete('/:id', route(async (req, res) => { await jobService.deleteJob(req.params.id as string); res.status(204).send(); }));
     router.post('/:id/run', route(async (req, res) => {
-        const execution = await jobService.startJob(req.params.id as string);
+        const execution = await jobService.startJob(req.params.id as string, parseRunInput(req.body));
         res.status(202).location(`/api/executions/${execution.executionId}`).json({
             executionId: execution.executionId,
             logId: execution.executionId,
@@ -26,6 +27,19 @@ export function createJobsController(jobService: JobService): Router {
         });
     }));
     return router;
+}
+
+function parseRunInput(body: unknown): unknown {
+    if (body === undefined) return undefined;
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+        throw new AppError('INVALID_RUN_REQUEST', 'Request body must be an object containing an optional input object.', 422);
+    }
+    const record = body as Record<string, unknown>;
+    const unsupported = Object.keys(record).filter(key => key !== 'input');
+    if (unsupported.length > 0) {
+        throw new AppError('INVALID_RUN_REQUEST', `Unsupported run request field: ${unsupported[0]}.`, 422);
+    }
+    return record.input;
 }
 
 type Handler = (req: Request, res: Response) => Promise<void>;

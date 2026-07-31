@@ -14,7 +14,9 @@ export type StepAttemptStatus = 'running' | 'success' | 'failed' | 'cancelled';
 export interface StepAttemptLog { attempt: number; status: StepAttemptStatus; startedAt: string; finishedAt?: string; durationMs?: number; errorCode?: string; error?: string; }
 export interface StepLog { stepId: string; stepName: string; stepType: string; status: StepStatus; startedAt?: string; finishedAt?: string; durationMs?: number; attempts: StepAttemptLog[]; output?: unknown; errorCode?: string; error?: string; reason?: string; }
 export type JobStatus = 'active' | 'inactive';
-export interface Job { id: string; name: string; schedule?: string; timezone: string; STEPS: Step[]; status: JobStatus; FAILURE_POLICY?: FailurePolicy; DEFAULT_STEP_RETRY?: RetryPolicy; MAX_CONCURRENCY?: number; TIMEOUT_MS?: number; [key: string]: unknown; }
+export type WebhookEventStatus = 'success' | 'failed' | 'cancelled' | 'skipped';
+export interface JobWebhook { URL: string; EVENTS?: WebhookEventStatus[]; }
+export interface Job { id: string; name: string; schedule?: string; timezone: string; STEPS: Step[]; status: JobStatus; FAILURE_POLICY?: FailurePolicy; DEFAULT_STEP_RETRY?: RetryPolicy; MAX_CONCURRENCY?: number; TIMEOUT_MS?: number; WEBHOOKS?: JobWebhook[]; [key: string]: unknown; }
 export interface JobView extends Job { last_run: string | null; next_run: string | null; created_at: string; updated_at: string; }
 export interface JobExecutionPlanStep { id: string; name: string; type: string; order: number; dependsOn: string[]; }
 export interface JobExecutionPlanLevel { level: number; steps: JobExecutionPlanStep[]; }
@@ -24,7 +26,10 @@ export type JobValidationResult = { valid: true; errors: []; job: Job } | { vali
 export type ExecutionTrigger = 'manual' | 'scheduled';
 export type ExecutionStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelled' | 'skipped';
 export interface ExecutionSummary { executionId: string; logId: string; jobId: string; trigger: ExecutionTrigger; status: ExecutionStatus; scheduledFor: string | null; requestedAt: string; startedAt: string | null; finishedAt: string | null; cancelRequestedAt: string | null; durationMs: number | null; error: { code: string | null; message: string } | null; skipReason: string | null; }
-export interface ExecutionDetail extends ExecutionSummary { jobDefinition: Job; stepResults: Record<string, StepLog>; }
+export interface ExecutionDetail extends ExecutionSummary { input: Record<string, unknown>; jobDefinition: Job; stepResults: Record<string, StepLog>; }
 export interface ExecutionListPage { items: ExecutionSummary[]; nextCursor: string | null; }
+export interface ExecutionEvent { eventId: string; executionId: string; type: string; payload: Record<string, unknown>; createdAt: string; }
+export type WebhookDeliveryStatus = 'pending' | 'delivering' | 'success' | 'failed';
+export interface WebhookDeliverySummary { deliveryId: string; executionId: string; eventType: string; url: string; status: WebhookDeliveryStatus; attemptCount: number; nextAttemptAt: string; responseStatus: number | null; lastError: string | null; createdAt: string; updatedAt: string; deliveredAt: string | null; }
 export interface JobRunResult { status: 'success' | 'failed' | 'cancelled'; errorCode?: string; error?: string; stepResults: Record<string, StepLog>; }
 export interface JobLog { logId: string; jobId: string; startTime: string; endTime?: string; durationMs?: number; status: ExecutionStatus; stepResults: Record<string, StepLog>; error?: string; }

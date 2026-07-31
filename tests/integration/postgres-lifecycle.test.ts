@@ -8,8 +8,10 @@ import { getSchemaVersions, migrate } from '../../src/db/migrations.js';
 import { createPool, type DatabasePool } from '../../src/db/pool.js';
 import { ExecutionRepository } from '../../src/repositories/ExecutionRepository.js';
 import { JobRepository } from '../../src/repositories/JobRepository.js';
+import { WebhookRepository } from '../../src/repositories/WebhookRepository.js';
 import { JobExecutionManager } from '../../src/services/JobExecutionManager.js';
 import { JobService } from '../../src/services/JobService.js';
+import { WebhookDispatcher, createWebhookSignature } from '../../src/services/WebhookDispatcher.js';
 import type { Job } from '../../src/types/index.js';
 
 let container: StartedPostgreSqlContainer | undefined;
@@ -102,6 +104,41 @@ describe('PostgreSQL repositories and lifecycle', () => {
         const detail = await executions.getDetail(queued.executionId);
         expect(detail?.stepResults.only?.attempts).toHaveLength(1);
         expect(detail?.stepResults.only?.output).toEqual({ ok: true });
+    });
+
+    it('retains active work while dry-running and deleting old terminal history', async () => {
+        await jobs.create(job('retention-terminal', 'inactive'));
+        const terminal = await executions.enqueueManual('retention-terminal');
+        await executions.requestCancellation(terminal.executionId);
+        await jobs.create(job('retention-active', 'inactive'));
+        const active = await executions.enqueueManual('retention-active');
+        const cutoff = new Date(Date.now() + 60_000);
+        expect(await executions.countTerminalBefore(cutoff)).toBe(1);
+        expect(await executions.deleteTerminalBefore(cutoff, 100, true)).toEqual([terminal.executionId]);
+        expect(await executions.getSummary(terminal.executionId)).toBeDefined();
+        expect(await executions.deleteTerminalBefore(cutoff, 100, false)).toEqual([terminal.executionId]);
+        expect(await executions.getSummary(terminal.executionId)).toBeUndefined();
+        expect((await executions.getSummary(active.executionId))?.status).toBe('queued');
+    });
+
+    it('reconciles webhook deliveries that were interrupted mid-request', async () => {
+        const definition = {
+            ...job('webhook-restart', 'inactive'),
+            WEBHOOKS: [{ URL: 'https://example.test/events', EVENTS: ['success' as const] }]
+        };
+        await jobs.create(definition);
+        const queued = await executions.enqueueManual(definition.id);
+        await executions.claimOldestQueued();
+        await executions.finishExecution(queued.executionId, 'success', null, null);
+        const webhooks = new WebhookRepository(pool);
+        const firstClaim = await webhooks.claimDue();
+        expect(firstClaim?.attemptCount).toBe(1);
+        expect(await webhooks.reconcileDelivering(3)).toBe(1);
+        const resumedClaim = await webhooks.claimDue();
+        expect(resumedClaim?.deliveryId).toBe(firstClaim?.deliveryId);
+        expect(resumedClaim?.attemptCount).toBe(2);
+        await webhooks.fail(resumedClaim!.deliveryId, 2, 'still unavailable', null);
+        expect((await executions.listWebhookDeliveries(queued.executionId))[0]?.status).toBe('failed');
     });
 });
 
@@ -199,6 +236,124 @@ describe('HTTP execution API', () => {
         await pool.query(`UPDATE executions SET status = 'success', finished_at = clock_timestamp() WHERE id = $1`, [queued.executionId]);
         await request(app).post(`/api/executions/${queued.executionId}/cancel`).expect(409)
             .expect(response => expect(response.body.code).toBe('EXECUTION_NOT_CANCELLABLE'));
+    });
+
+    it('persists runtime input, exposes filtered history, and replays durable SSE events', async () => {
+        const manager = new JobExecutionManager(executions, undefined, 1, 25);
+        const service = new JobService(jobs, executions);
+        const app = createApp({ pool, jobs: service, executions, manager });
+        const definition = job('input-events', 'inactive');
+        definition.STEPS[0] = {
+            ORDER: 1,
+            ID: 'only',
+            NAME: 'Only',
+            TYPE: 'SCRIPT',
+            STEP_PARAMS: { CODE: 'context => ({ greeting: context.input.greeting })' }
+        };
+        await request(app).post('/api/jobs').send(definition).expect(201);
+        await request(app).post('/api/jobs/input-events/run').send({ input: [] }).expect(422)
+            .expect(response => expect(response.body.code).toBe('INVALID_EXECUTION_INPUT'));
+        await request(app).post('/api/jobs/input-events/run').send({ unexpected: true }).expect(422)
+            .expect(response => expect(response.body.code).toBe('INVALID_RUN_REQUEST'));
+        await manager.start();
+        try {
+            const run = await request(app).post('/api/jobs/input-events/run')
+                .send({ input: { greeting: 'hello' } })
+                .expect(202);
+            await waitFor(async () => (await executions.getSummary(run.body.executionId as string))?.status === 'success');
+            await request(app).get(`/api/executions/${run.body.executionId}`).expect(200)
+                .expect(response => {
+                    expect(response.body.input).toEqual({ greeting: 'hello' });
+                    expect(response.body.stepResults.only.output).toEqual({ greeting: 'hello' });
+                });
+            const requestedAt = Date.parse(run.body.requestedAt as string);
+            const before = new Date(requestedAt - 1_000).toISOString();
+            const after = new Date(requestedAt + 1_000).toISOString();
+            await request(app)
+                .get(`/api/executions?jobId=input-events&trigger=manual&status=success&from=${encodeURIComponent(before)}&to=${encodeURIComponent(after)}`)
+                .expect(200)
+                .expect(response => expect(response.body.items).toHaveLength(1));
+            await request(app).get('/api/executions?trigger=other').expect(400)
+                .expect(response => expect(response.body.code).toBe('INVALID_TRIGGER'));
+            const stream = await request(app)
+                .get(`/api/executions/${run.body.executionId}/events`)
+                .set('Last-Event-ID', '0')
+                .expect(200)
+                .expect('Content-Type', /text\/event-stream/u);
+            expect(stream.text).toContain('event: execution.queued');
+            expect(stream.text).toContain('event: step.success');
+            expect(stream.text).toContain('event: execution.success');
+            const firstEvent = (await executions.listEvents(run.body.executionId as string, 0n, 1))[0]!;
+            const resumed = await request(app)
+                .get(`/api/executions/${run.body.executionId}/events`)
+                .set('Last-Event-ID', firstEvent.eventId)
+                .expect(200);
+            expect(resumed.text).not.toContain('event: execution.queued');
+            expect(resumed.text).toContain('event: execution.success');
+        } finally {
+            await manager.shutdown(1_000);
+        }
+    });
+
+    it('delivers terminal webhooks from the durable outbox and retries failures', async () => {
+        const received: Array<{ body: string; headers: Record<string, string | string[] | undefined> }> = [];
+        const webhookServer = createServer((req, res) => {
+            const chunks: Buffer[] = [];
+            req.on('data', chunk => chunks.push(Buffer.from(chunk)));
+            req.on('end', () => {
+                received.push({ body: Buffer.concat(chunks).toString('utf8'), headers: req.headers });
+                if (received.length === 1) {
+                    res.statusCode = 500;
+                    res.end('retry me');
+                } else {
+                    res.statusCode = 204;
+                    res.end();
+                }
+            });
+        });
+        await new Promise<void>(resolve => webhookServer.listen(0, '127.0.0.1', resolve));
+        const port = (webhookServer.address() as AddressInfo).port;
+        const definition = {
+            ...job('webhook-job', 'inactive'),
+            WEBHOOKS: [{ URL: `http://127.0.0.1:${port}/events`, EVENTS: ['success' as const] }]
+        };
+        await jobs.create(definition);
+        const queued = await executions.enqueueManual(definition.id, { trace: 'abc' });
+        const manager = new JobExecutionManager(executions, undefined, 1, 25);
+        const webhookRepository = new WebhookRepository(pool);
+        const dispatcher = new WebhookDispatcher(webhookRepository, {
+            concurrency: 1,
+            pollMs: 20,
+            maxAttempts: 3,
+            requestTimeoutMs: 1_000,
+            signingKey: 'test-signing-key'
+        });
+        try {
+            await manager.start();
+            await dispatcher.start();
+            await waitFor(async () => (await executions.getSummary(queued.executionId))?.status === 'success');
+            await waitFor(async () => (await executions.listWebhookDeliveries(queued.executionId))[0]?.status === 'success');
+            const delivery = (await executions.listWebhookDeliveries(queued.executionId))[0]!;
+            expect(delivery.attemptCount).toBe(2);
+            expect(delivery.responseStatus).toBe(204);
+            expect(received).toHaveLength(2);
+            const last = received[1]!;
+            const payload = JSON.parse(last.body) as { event: string; deliveryId: string; execution: { executionId: string } };
+            expect(payload.event).toBe('execution.success');
+            expect(payload.execution.executionId).toBe(queued.executionId);
+            expect(last.headers['x-backgroundjobs-delivery']).toBe(delivery.deliveryId);
+            const timestamp = last.headers['x-backgroundjobs-timestamp'] as string;
+            expect(last.headers['x-backgroundjobs-signature']).toBe(
+                createWebhookSignature('test-signing-key', timestamp, last.body)
+            );
+            await request(createApp({ pool, jobs: new JobService(jobs, executions), executions, manager, webhookDispatcher: dispatcher }))
+                .get(`/api/executions/${queued.executionId}/webhooks`)
+                .expect(200)
+                .expect(response => expect(response.body[0].status).toBe('success'));
+        } finally {
+            await Promise.all([manager.shutdown(1_000), dispatcher.shutdown()]);
+            await new Promise<void>(resolve => webhookServer.close(() => resolve()));
+        }
     });
 });
 

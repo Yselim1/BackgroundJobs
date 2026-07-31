@@ -8,6 +8,7 @@ import { createLogsController } from './controllers/logsController.js';
 import { ExecutionRepository } from './repositories/ExecutionRepository.js';
 import { JobExecutionManager } from './services/JobExecutionManager.js';
 import { JobService } from './services/JobService.js';
+import type { WebhookDispatcher } from './services/WebhookDispatcher.js';
 import { JobValidationError } from './utils/jobValidator.js';
 
 export interface AppDependencies {
@@ -15,6 +16,7 @@ export interface AppDependencies {
     jobs: JobService;
     executions: ExecutionRepository;
     manager: JobExecutionManager;
+    webhookDispatcher?: WebhookDispatcher;
 }
 
 export function createApp(dependencies: AppDependencies): express.Express {
@@ -25,7 +27,9 @@ export function createApp(dependencies: AppDependencies): express.Express {
         try {
             await dependencies.pool.query('SELECT 1');
             await assertSchemaCurrent(dependencies.pool);
-            if (!dependencies.manager.started) throw new Error('Scheduler and dispatcher have not started.');
+            if (!dependencies.manager.started || !dependencies.webhookDispatcher?.started) {
+                throw new Error('Scheduler, execution dispatcher, and webhook dispatcher have not started.');
+            }
             res.status(200).json({ status: 'ready' });
         } catch (error: unknown) {
             res.status(503).json({ status: 'not_ready', error: error instanceof Error ? error.message : String(error) });

@@ -28,6 +28,8 @@ const RETRY_BACKOFF_TYPES = new Set([
     'exponential'
 ]);
 
+const WEBHOOK_EVENTS = new Set(['success', 'failed', 'cancelled', 'skipped']);
+
 export class JobValidationError extends Error {
     readonly issues: ValidationIssue[];
 
@@ -90,6 +92,10 @@ export function validateJobDefinition(input: unknown): JobValidationResult {
 
             if(normalizedStepId.includes('.')) {
                 addIssue(errors, `${stepPath}.ID`, 'INVALID_STEP_ID', 'Step ID cannot contain dots.');
+            }
+
+            if (normalizedStepId === 'input') {
+                addIssue(errors, `${stepPath}.ID`, 'RESERVED_STEP_ID', 'Step ID "input" is reserved for execution input.');
             }
 
             if(stepIds.has(normalizedStepId)) {
@@ -272,6 +278,15 @@ function normalizeJobDefinition(input: unknown): unknown {
             return normalizedStep;
         });
     }
+    if (Array.isArray(input.WEBHOOKS)) {
+        normalizedJob.WEBHOOKS = input.WEBHOOKS.map(rawWebhook => {
+            if (!isRecord(rawWebhook)) return rawWebhook;
+            return {
+                ...rawWebhook,
+                ...(typeof rawWebhook.URL === 'string' ? { URL: rawWebhook.URL.trim() } : {})
+            };
+        });
+    }
     return normalizedJob;
 }
 
@@ -326,6 +341,46 @@ function validateExecutionSettings(job: Record<string, unknown>, errors: Validat
     }
 
     validateRetryPolicy(job.DEFAULT_STEP_RETRY, 'DEFAULT_STEP_RETRY', errors);
+    validateWebhooks(job.WEBHOOKS, errors);
+}
+
+function validateWebhooks(value: unknown, errors: ValidationIssue[]): void {
+    if (value === undefined) return;
+    if (!Array.isArray(value) || value.length === 0) {
+        addIssue(errors, 'WEBHOOKS', 'INVALID_WEBHOOKS', 'WEBHOOKS must be a non-empty array when provided.');
+        return;
+    }
+    if (value.length > 10) {
+        addIssue(errors, 'WEBHOOKS', 'TOO_MANY_WEBHOOKS', 'A job may define at most 10 webhooks.');
+    }
+    value.forEach((item, index) => {
+        const path = `WEBHOOKS[${index}]`;
+        if (!isRecord(item)) {
+            addIssue(errors, path, 'INVALID_WEBHOOK', 'Webhook must be an object.');
+            return;
+        }
+        if (!validateRequiredString(item.URL, `${path}.URL`, 'WEBHOOK_URL_REQUIRED', errors)) return;
+        try {
+            const url = new URL(item.URL);
+            if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('unsupported protocol');
+        } catch {
+            addIssue(errors, `${path}.URL`, 'INVALID_WEBHOOK_URL', 'Webhook URL must be an absolute HTTP or HTTPS URL.');
+        }
+        if (item.EVENTS !== undefined) {
+            if (!Array.isArray(item.EVENTS) || item.EVENTS.length === 0) {
+                addIssue(errors, `${path}.EVENTS`, 'INVALID_WEBHOOK_EVENTS', 'EVENTS must be a non-empty array.');
+            } else {
+                const encountered = new Set<string>();
+                item.EVENTS.forEach((event, eventIndex) => {
+                    if (typeof event !== 'string' || !WEBHOOK_EVENTS.has(event)) {
+                        addIssue(errors, `${path}.EVENTS[${eventIndex}]`, 'INVALID_WEBHOOK_EVENT', 'Webhook event must be success, failed, cancelled, or skipped.');
+                    } else if (encountered.has(event)) {
+                        addIssue(errors, `${path}.EVENTS[${eventIndex}]`, 'DUPLICATE_WEBHOOK_EVENT', `Duplicate webhook event: ${event}.`);
+                    } else encountered.add(event);
+                });
+            }
+        }
+    });
 }
 
 function validateRetryPolicy(value: unknown, path: string, errors: ValidationIssue[]): void {

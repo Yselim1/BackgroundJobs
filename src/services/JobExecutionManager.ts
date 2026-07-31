@@ -101,7 +101,7 @@ export class JobExecutionManager {
     }
 
     private async executeClaimed(claimed: ClaimedExecution, controller: AbortController): Promise<void> {
-        const { executionId, jobDefinition, startedAt } = claimed;
+        const { executionId, jobDefinition, startedAt, input } = claimed;
         let timeout: NodeJS.Timeout | undefined;
         try {
             if (await this.executions.isCancellationRequested(executionId)) {
@@ -115,7 +115,8 @@ export class JobExecutionManager {
             }
             const result = await this.runner.run(jobDefinition, {
                 signal: controller.signal,
-                observer: this.observerFor(executionId)
+                observer: this.observerFor(executionId),
+                input
             });
             const cancellationWonRace = await this.executions.isCancellationRequested(executionId);
             const status = cancellationWonRace ? 'cancelled' : result.status;

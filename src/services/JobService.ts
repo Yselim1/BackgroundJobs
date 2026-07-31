@@ -3,6 +3,7 @@ import { ExecutionRepository } from '../repositories/ExecutionRepository.js';
 import { JobRepository } from '../repositories/JobRepository.js';
 import type { ExecutionSummary, Job, JobExecutionPlan, JobValidationResult, JobView, Step } from '../types/index.js';
 import { buildDependencyLevels } from '../utils/jobGraph.js';
+import { normalizeExecutionInput } from '../utils/executionInput.js';
 import { assertValidJobDefinition, JobValidationError, validateJobDefinition } from '../utils/jobValidator.js';
 
 export class JobService {
@@ -27,7 +28,9 @@ export class JobService {
 
     async deleteJob(jobId: string): Promise<void> { await this.jobs.delete(jobId); }
 
-    async startJob(jobId: string): Promise<ExecutionSummary> { return this.executions.enqueueManual(jobId); }
+    async startJob(jobId: string, input?: unknown): Promise<ExecutionSummary> {
+        return this.executions.enqueueManual(jobId, normalizeExecutionInput(input));
+    }
 
     async getJobWithID(id: string): Promise<JobView> {
         const job = await this.jobs.getById(id);

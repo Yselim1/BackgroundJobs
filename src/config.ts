@@ -4,6 +4,11 @@ export interface AppConfig {
     workerConcurrency: number;
     schedulerPollMs: number;
     shutdownGraceMs: number;
+    webhookConcurrency: number;
+    webhookPollMs: number;
+    webhookMaxAttempts: number;
+    webhookRequestTimeoutMs: number;
+    webhookSigningKey: string | undefined;
     port: number;
 }
 
@@ -14,8 +19,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         workerConcurrency: positiveInteger(env.WORKER_CONCURRENCY, 4, 'WORKER_CONCURRENCY'),
         schedulerPollMs: positiveInteger(env.SCHEDULER_POLL_MS, 1000, 'SCHEDULER_POLL_MS'),
         shutdownGraceMs: positiveInteger(env.SHUTDOWN_GRACE_MS, 10000, 'SHUTDOWN_GRACE_MS'),
+        webhookConcurrency: positiveInteger(env.WEBHOOK_CONCURRENCY, 2, 'WEBHOOK_CONCURRENCY'),
+        webhookPollMs: positiveInteger(env.WEBHOOK_POLL_MS, 500, 'WEBHOOK_POLL_MS'),
+        webhookMaxAttempts: positiveInteger(env.WEBHOOK_MAX_ATTEMPTS, 5, 'WEBHOOK_MAX_ATTEMPTS'),
+        webhookRequestTimeoutMs: positiveInteger(env.WEBHOOK_REQUEST_TIMEOUT_MS, 10000, 'WEBHOOK_REQUEST_TIMEOUT_MS'),
+        webhookSigningKey: nonEmptyString(env.WEBHOOK_SIGNING_KEY, 'WEBHOOK_SIGNING_KEY'),
         port: positiveInteger(env.PORT, 3000, 'PORT')
     };
+}
+
+function nonEmptyString(value: string | undefined, name: string): string | undefined {
+    if (value === undefined) return undefined;
+    if (value.trim().length === 0) throw new Error(`${name} must be non-empty when provided.`);
+    return value;
 }
 
 function positiveInteger(value: string | undefined, fallback: number, name: string): number {
@@ -26,4 +42,3 @@ function positiveInteger(value: string | undefined, fallback: number, name: stri
     }
     return parsed;
 }
-

@@ -1,6 +1,6 @@
 # Background Jobs Framework
 
-A Node.js 24+ and TypeScript background-job service with PostgreSQL-backed definitions, durable execution history, six-field cron scheduling, a transactional work queue, bounded concurrency, retries, cancellation, and job deadlines.
+A Node.js 24+ and TypeScript background-job service with PostgreSQL-backed definitions, durable execution history and progress events, six-field cron scheduling, a transactional work queue, bounded concurrency, retries, cancellation, job deadlines, runtime input, and reliable terminal webhooks.
 
 PostgreSQL is the source of truth. No job or execution exists only in process memory, and the reference file in `examples/jobs.json` is never imported at runtime.
 
@@ -93,11 +93,13 @@ Supported step types are `RESTAPI`, `SCRIPT`, `COMMAND`, and `PYTHON`. Step depe
 | `POST` | `/api/jobs/:id/run` | Queue a manual execution (`202`) |
 | `GET` | `/api/executions` | Filter and cursor-page execution summaries |
 | `GET` | `/api/executions/:id` | Get an execution with steps and attempts |
+| `GET` | `/api/executions/:id/events` | Replay and follow durable progress using SSE |
+| `GET` | `/api/executions/:id/webhooks` | Inspect webhook delivery state |
 | `POST` | `/api/executions/:id/cancel` | Cancel queued or running work |
 | `GET` | `/api/logs` | Legacy array alias |
 | `GET` | `/api/logs/:id` | Legacy detail alias |
 
-Execution list parameters are `jobId`, `status`, `limit` (default 50, maximum 200), and opaque `cursor`. Ordering is `requestedAt DESC, executionId DESC`.
+Execution list parameters are `jobId`, `status`, `trigger`, `from`, `to`, `limit` (default 50, maximum 200), and opaque `cursor`. Ordering is `requestedAt DESC, executionId DESC`.
 
 A manual run returns immediately:
 
@@ -128,8 +130,70 @@ npm run test:integration
 npm run build
 ```
 
-Unit tests cover cron/DST calculations, coalescing, abortable retries, job deadlines, and output serialization. Integration tests use Testcontainers PostgreSQL for migrations, repositories, queue lifecycle, restart reconciliation, API contracts, pagination, cancellation, and retained history; Docker must be running.
+Unit tests cover cron/DST calculations, coalescing, abortable retries, job deadlines, output serialization, runtime input, webhook validation, and signatures. Integration tests use Testcontainers PostgreSQL for migrations, repositories, queue lifecycle, restart reconciliation, API contracts, pagination/search, SSE replay, webhook retry/recovery, cancellation, and retention; Docker must be running.
+
+## Runtime input and progress events
+
+Manual runs accept an optional JSON object:
+
+~~~http
+POST /api/jobs/daily-report/run
+Content-Type: application/json
+
+{
+  "input": {
+    "reportDate": "2026-07-31",
+    "accountId": 42
+  }
+}
+~~~
+
+Input is stored with the execution. Scripts read it from context.input, while REST request templates can use paths such as {{input.accountId}} without adding a step dependency. Input must be a JSON object and must be fully JSON-serializable. The step ID input is reserved for this context root.
+
+GET /api/executions/:id/events is a replayable Server-Sent Events stream. Clients can reconnect with the Last-Event-ID header or the after query parameter. Events are persisted before execution continues and include execution, step, and attempt transitions. The stream closes after the terminal event has been replayed.
+
+GET /api/executions supports trigger, from, and to in addition to the existing filters. from is inclusive, to is exclusive, and both are ISO-8601 timestamps.
+
+## Reliable webhooks
+
+Jobs can define up to ten terminal webhooks:
+
+~~~json
+{
+  "WEBHOOKS": [
+    {
+      "URL": "https://example.internal/job-events",
+      "EVENTS": ["success", "failed", "cancelled"]
+    }
+  ]
+}
+~~~
+
+Omitting EVENTS subscribes to success, failed, cancelled, and skipped. Terminal state and webhook delivery are committed in one PostgreSQL transaction. The dispatcher retries failures with persisted exponential backoff, recovers interrupted deliveries after restart, and exposes state at GET /api/executions/:id/webhooks.
+
+Webhook configuration:
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| WEBHOOK_CONCURRENCY | 2 | Maximum concurrent webhook requests |
+| WEBHOOK_POLL_MS | 500 | Outbox poll interval |
+| WEBHOOK_MAX_ATTEMPTS | 5 | Maximum attempts per delivery |
+| WEBHOOK_REQUEST_TIMEOUT_MS | 10000 | Timeout for each request |
+| WEBHOOK_SIGNING_KEY | unset | Optional global HMAC-SHA256 key |
+
+Each request includes X-Backgroundjobs-Delivery, X-Backgroundjobs-Event, and X-Backgroundjobs-Timestamp. When WEBHOOK_SIGNING_KEY is configured, X-Backgroundjobs-Signature contains an HMAC-SHA256 signature over the timestamp and exact body. Per-job credentials and secret storage remain deferred to the security/authentication milestone.
+
+## History retention
+
+Retention is an explicit operator action and only selects terminal executions. It is a dry run unless --confirm is present; queued and running work is never deleted.
+
+~~~bash
+npm run retention -- --days 90
+npm run retention -- --days 90 --batch-size 500 --confirm
+~~~
+
+Associated steps, attempts, progress events, and webhook deliveries are removed in the same database cascade.
 
 ## Adding Kafka or RabbitMQ later
 
-Keep PostgreSQL authoritative and add a transactional outbox written in the same transaction as each execution transition. RabbitMQ can wake work-queue consumers; Kafka can carry lifecycle events for audit, analytics, notifications, and downstream systems. A consumer should receive only an execution ID, claim/verify it in PostgreSQL, and be idempotent under at-least-once delivery. Cancellation messages are hints—the persisted `cancel_requested_at` value remains decisive.
+Keep PostgreSQL authoritative and publish from the transactional event/outbox records introduced in this milestone. RabbitMQ can wake work-queue consumers; Kafka can carry lifecycle events for audit, analytics, notifications, and downstream systems. A consumer should receive only an execution ID, claim/verify it in PostgreSQL, and be idempotent under at-least-once delivery. Cancellation messages are hints—the persisted `cancel_requested_at` value remains decisive.

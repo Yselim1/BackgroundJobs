@@ -35,6 +35,7 @@ const NOOP_OBSERVER: ExecutionObserver = {
 export interface JobRunOptions {
     signal?: AbortSignal;
     observer?: ExecutionObserver;
+    input?: Record<string, unknown>;
 }
 
 export class JobRunner {
@@ -55,7 +56,7 @@ export class JobRunner {
             }
             const failurePolicy = executableJob.FAILURE_POLICY ?? 'fail_fast';
             const maxConcurrency = executableJob.MAX_CONCURRENCY ?? 10;
-            const context: Record<string, unknown> = {};
+            const context: Record<string, unknown> = { input: options.input ?? {} };
             let representativeFailure: Error | undefined;
 
             while (pendingSteps.size > 0) {
