@@ -3,6 +3,13 @@
   "version": "1.0.0",
   "type": "module",
   "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./sdk": {
+      "types": "./dist/sdk/index.d.ts",
+      "import": "./dist/sdk/index.js"
+    }
+  },
   "engines": {
     "node": ">=24.0.0"
   },

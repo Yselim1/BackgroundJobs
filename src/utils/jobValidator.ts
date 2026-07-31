@@ -1,7 +1,8 @@
 import {ExecutorRegistry } from '../executors/ExecutorRegistry.js';
-import type{Job, JobValidationResult, ValidationIssue} from '../types/index.js';
+import type{Job, JobValidationResult, ValidationIssue, WorkflowConditionOperator} from '../types/index.js';
 import {findDependencyCycle, type DependencyNode} from './jobGraph.js';
 import { assertValidCron, assertValidTimezone } from './cron.js';
+import { getWorkflowPathRoot, isValidWorkflowPath } from './workflowExpressions.js';
 const HTTP_METHODS = new Set([
     'GET',
     'POST',
@@ -29,6 +30,15 @@ const RETRY_BACKOFF_TYPES = new Set([
 ]);
 
 const WEBHOOK_EVENTS = new Set(['success', 'failed', 'cancelled', 'skipped']);
+const CONDITION_OPERATORS = new Set<WorkflowConditionOperator>([
+    'equals', 'not_equals', 'exists', 'not_exists', 'truthy', 'falsy',
+    'greater_than', 'greater_than_or_equal', 'less_than', 'less_than_or_equal', 'contains'
+]);
+const VALUE_CONDITION_OPERATORS = new Set<WorkflowConditionOperator>([
+    'equals', 'not_equals', 'greater_than', 'greater_than_or_equal',
+    'less_than', 'less_than_or_equal', 'contains'
+]);
+const RESERVED_CONTEXT_ROOTS = new Set(['input', 'item', 'index']);
 
 export class JobValidationError extends Error {
     readonly issues: ValidationIssue[];
@@ -94,8 +104,8 @@ export function validateJobDefinition(input: unknown): JobValidationResult {
                 addIssue(errors, `${stepPath}.ID`, 'INVALID_STEP_ID', 'Step ID cannot contain dots.');
             }
 
-            if (normalizedStepId === 'input') {
-                addIssue(errors, `${stepPath}.ID`, 'RESERVED_STEP_ID', 'Step ID "input" is reserved for execution input.');
+            if (RESERVED_CONTEXT_ROOTS.has(normalizedStepId)) {
+                addIssue(errors, `${stepPath}.ID`, 'RESERVED_STEP_ID', `Step ID "${normalizedStepId}" is a reserved context root.`);
             }
 
             if(stepIds.has(normalizedStepId)) {
@@ -127,11 +137,13 @@ export function validateJobDefinition(input: unknown): JobValidationResult {
         }
 
         validateRetryPolicy(rawStep.RETRY, `${stepPath}.RETRY`, errors);
+        validateWorkflowShape(rawStep, stepPath, errors);
 
         validateStepParameters(rawStep, stepPath, errors);
     }
     
     validateDependencies(rawSteps, stepIds, errors);
+    validateWorkflowReferences(rawSteps, stepIds, errors);
     const dependencyNodes = buildDependencyNodes(rawSteps);
 
     if (dependencyNodes !== undefined) {
@@ -275,6 +287,20 @@ function normalizeJobDefinition(input: unknown): unknown {
                 });
             }
 
+            if (isRecord(normalizedStep.WHEN)) {
+                normalizedStep.WHEN = {
+                    ...normalizedStep.WHEN,
+                    ...(typeof normalizedStep.WHEN.PATH === 'string' ? { PATH: normalizedStep.WHEN.PATH.trim() } : {}),
+                    ...(typeof normalizedStep.WHEN.OPERATOR === 'string' ? { OPERATOR: normalizedStep.WHEN.OPERATOR.trim().toLowerCase() } : {})
+                };
+            }
+            if (isRecord(normalizedStep.FOREACH)) {
+                normalizedStep.FOREACH = {
+                    ...normalizedStep.FOREACH,
+                    ...(typeof normalizedStep.FOREACH.ITEMS === 'string' ? { ITEMS: normalizedStep.FOREACH.ITEMS.trim() } : {})
+                };
+            }
+
             return normalizedStep;
         });
     }
@@ -379,6 +405,7 @@ function validateWebhooks(value: unknown, errors: ValidationIssue[]): void {
                     } else encountered.add(event);
                 });
             }
+
         }
     });
 }
@@ -416,6 +443,72 @@ function validateRetryPolicy(value: unknown, path: string, errors: ValidationIss
     ) {
         addIssue(errors, `${path}.BACKOFF`, 'INVALID_RETRY_BACKOFF', 'BACKOFF must be "fixed" or "exponential".');
     }
+}
+
+function validateWorkflowShape(step: Record<string, unknown>, path: string, errors: ValidationIssue[]): void {
+    if (step.WHEN !== undefined) {
+        if (!isRecord(step.WHEN)) {
+            addIssue(errors, `${path}.WHEN`, 'INVALID_CONDITION', 'WHEN must be an object.');
+        } else {
+            const conditionPath = step.WHEN.PATH;
+            const pathValid = validateRequiredString(conditionPath, `${path}.WHEN.PATH`, 'CONDITION_PATH_REQUIRED', errors);
+            if (pathValid && !isValidWorkflowPath(conditionPath)) {
+                addIssue(errors, `${path}.WHEN.PATH`, 'INVALID_WORKFLOW_PATH', 'Condition path must use safe, non-empty dot-separated segments.');
+            }
+            const operator = step.WHEN.OPERATOR ?? 'truthy';
+            if (typeof operator !== 'string' || !CONDITION_OPERATORS.has(operator as WorkflowConditionOperator)) {
+                addIssue(errors, `${path}.WHEN.OPERATOR`, 'INVALID_CONDITION_OPERATOR', 'Unsupported condition operator.');
+            } else if (VALUE_CONDITION_OPERATORS.has(operator as WorkflowConditionOperator) && !Object.hasOwn(step.WHEN, 'VALUE')) {
+                addIssue(errors, `${path}.WHEN.VALUE`, 'CONDITION_VALUE_REQUIRED', `VALUE is required for operator ${operator}.`);
+            }
+        }
+    }
+    if (step.FOREACH !== undefined) {
+        if (!isRecord(step.FOREACH)) {
+            addIssue(errors, `${path}.FOREACH`, 'INVALID_FOREACH', 'FOREACH must be an object.');
+        } else {
+            const itemsPath = step.FOREACH.ITEMS;
+            const itemsValid = validateRequiredString(itemsPath, `${path}.FOREACH.ITEMS`, 'FOREACH_ITEMS_REQUIRED', errors);
+            if (itemsValid && !isValidWorkflowPath(itemsPath)) {
+                addIssue(errors, `${path}.FOREACH.ITEMS`, 'INVALID_WORKFLOW_PATH', 'FOREACH ITEMS must use safe, non-empty dot-separated segments.');
+            }
+            if (
+                step.FOREACH.MAX_CONCURRENCY !== undefined &&
+                (typeof step.FOREACH.MAX_CONCURRENCY !== 'number' ||
+                    !Number.isInteger(step.FOREACH.MAX_CONCURRENCY) ||
+                    step.FOREACH.MAX_CONCURRENCY < 1)
+            ) {
+                addIssue(errors, `${path}.FOREACH.MAX_CONCURRENCY`, 'INVALID_FOREACH_CONCURRENCY', 'FOREACH MAX_CONCURRENCY must be a positive integer.');
+            }
+        }
+    }
+}
+
+function validateWorkflowReferences(rawSteps: unknown[], stepIds: ReadonlySet<string>, errors: ValidationIssue[]): void {
+    rawSteps.forEach((rawStep, index) => {
+        if (!isRecord(rawStep)) return;
+        const dependencies = new Set(
+            Array.isArray(rawStep.DEPENDS_ON)
+                ? rawStep.DEPENDS_ON.filter((item): item is string => typeof item === 'string').map(item => item.trim())
+                : []
+        );
+        const references: Array<{ path: string; value: unknown }> = [
+            { path: `STEPS[${index}].WHEN.PATH`, value: isRecord(rawStep.WHEN) ? rawStep.WHEN.PATH : undefined },
+            { path: `STEPS[${index}].FOREACH.ITEMS`, value: isRecord(rawStep.FOREACH) ? rawStep.FOREACH.ITEMS : undefined }
+        ];
+        for (const reference of references) {
+            if (typeof reference.value !== 'string' || !isValidWorkflowPath(reference.value)) continue;
+            const root = getWorkflowPathRoot(reference.value);
+            if (root === 'input') continue;
+            if (root === undefined || RESERVED_CONTEXT_ROOTS.has(root)) {
+                addIssue(errors, reference.path, 'INVALID_WORKFLOW_ROOT', `Workflow path root "${root ?? ''}" is not available here.`);
+            } else if (!stepIds.has(root)) {
+                addIssue(errors, reference.path, 'MISSING_WORKFLOW_SOURCE', `Workflow source step "${root}" does not exist.`);
+            } else if (!dependencies.has(root)) {
+                addIssue(errors, reference.path, 'WORKFLOW_SOURCE_NOT_DEPENDENCY', `Step "${root}" must be declared in DEPENDS_ON before its output can be used.`);
+            }
+        }
+    });
 }
 
 function validateDependencies(rawSteps: unknown[], stepIds: ReadonlySet<string>, errors: ValidationIssue[]): void {
@@ -490,6 +583,15 @@ function validateStepParameters(step: Record<string, unknown>, stepPath: string,
             validateCodeParameters(params, paramsPath, errors);
             break;
       }
+
+    const plugin = ExecutorRegistry.getPlugin(step.TYPE);
+    if (plugin?.validate !== undefined) {
+        try {
+            errors.push(...plugin.validate(params, paramsPath));
+        } catch (error: unknown) {
+            addIssue(errors, paramsPath, 'PLUGIN_VALIDATION_FAILED', error instanceof Error ? error.message : String(error));
+        }
+    }
   }
 
 function validateRestApiParameters(params: Record<string, unknown>, path: string, errors: ValidationIssue[]): void {

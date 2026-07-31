@@ -70,6 +70,7 @@ interface StepRow {
 interface AttemptRow {
     step_id: string;
     attempt: number;
+    item_index: number;
     status: StepAttemptLog['status'];
     started_at: Date;
     finished_at: Date | null;
@@ -198,7 +199,7 @@ export class ExecutionRepository {
         if (row === undefined) return undefined;
         const [steps, attempts] = await Promise.all([
             this.pool.query<StepRow>('SELECT * FROM execution_steps WHERE execution_id = $1 ORDER BY step_order', [executionId]),
-            this.pool.query<AttemptRow>('SELECT * FROM execution_attempts WHERE execution_id = $1 ORDER BY step_id, attempt', [executionId])
+            this.pool.query<AttemptRow>('SELECT * FROM execution_attempts WHERE execution_id = $1 ORDER BY step_id, item_index, attempt', [executionId])
         ]);
         const attemptsByStep = new Map<string, StepAttemptLog[]>();
         for (const attempt of attempts.rows) {
@@ -397,28 +398,31 @@ export class ExecutionRepository {
         });
     }
 
-    async attemptStarted(executionId: string, stepId: string, attempt: number, startedAt: Date): Promise<void> {
+    async attemptStarted(executionId: string, stepId: string, attempt: number, startedAt: Date, itemIndex?: number): Promise<void> {
         await withTransaction(this.pool, async client => {
             await client.query(
-                `INSERT INTO execution_attempts(execution_id, step_id, attempt, status, started_at)
-                 VALUES ($1, $2, $3, 'running', $4)`,
-                [executionId, stepId, attempt, startedAt]
+                `INSERT INTO execution_attempts(execution_id, step_id, item_index, attempt, status, started_at)
+                 VALUES ($1, $2, $3, $4, 'running', $5)`,
+                [executionId, stepId, itemIndex ?? -1, attempt, startedAt]
             );
-            await appendEvent(client, executionId, 'attempt.running', { stepId, attempt, startedAt: startedAt.toISOString() });
+            await appendEvent(client, executionId, 'attempt.running', {
+                stepId, attempt, ...(itemIndex === undefined ? {} : { itemIndex }), startedAt: startedAt.toISOString()
+            });
         });
     }
 
     async attemptFinished(executionId: string, stepId: string, attempt: StepAttemptLog): Promise<void> {
         await withTransaction(this.pool, async client => {
             await client.query(
-                `UPDATE execution_attempts SET status = $4, finished_at = $5,
-                    duration_ms = $6, error_code = $7, error_message = $8
-                 WHERE execution_id = $1 AND step_id = $2 AND attempt = $3`,
-                [executionId, stepId, attempt.attempt, attempt.status, attempt.finishedAt ?? null,
+                `UPDATE execution_attempts SET status = $5, finished_at = $6,
+                    duration_ms = $7, error_code = $8, error_message = $9
+                 WHERE execution_id = $1 AND step_id = $2 AND attempt = $3 AND item_index = $4`,
+                [executionId, stepId, attempt.attempt, attempt.itemIndex ?? -1, attempt.status, attempt.finishedAt ?? null,
                     attempt.durationMs ?? null, attempt.errorCode ?? null, attempt.error ?? null]
             );
             await appendEvent(client, executionId, `attempt.${attempt.status}`, {
                 stepId, attempt: attempt.attempt, status: attempt.status,
+                ...(attempt.itemIndex === undefined ? {} : { itemIndex: attempt.itemIndex }),
                 finishedAt: attempt.finishedAt ?? null, durationMs: attempt.durationMs ?? null,
                 ...(attempt.errorCode === undefined ? {} : { errorCode: attempt.errorCode }),
                 ...(attempt.error === undefined ? {} : { error: attempt.error })
@@ -457,15 +461,18 @@ export class ExecutionRepository {
                  WHERE execution_id = $1 AND status IN ('pending', 'running') RETURNING step_id`,
                 [executionId, reason]
             );
-            const attempts = await client.query<{ step_id: string; attempt: number }>(
+            const attempts = await client.query<{ step_id: string; attempt: number; item_index: number }>(
                 `UPDATE execution_attempts SET status = 'cancelled', finished_at = clock_timestamp(),
                     duration_ms = GREATEST(0, floor(extract(epoch FROM (clock_timestamp() - started_at)) * 1000))::bigint,
                     error_code = 'EXECUTION_CANCELLED', error_message = $2
-                 WHERE execution_id = $1 AND status = 'running' RETURNING step_id, attempt`,
+                 WHERE execution_id = $1 AND status = 'running' RETURNING step_id, attempt, item_index`,
                 [executionId, reason]
             );
             for (const attempt of attempts.rows) {
-                await appendEvent(client, executionId, 'attempt.cancelled', { stepId: attempt.step_id, attempt: attempt.attempt, reason });
+                await appendEvent(client, executionId, 'attempt.cancelled', {
+                    stepId: attempt.step_id, attempt: attempt.attempt,
+                    ...(attempt.item_index < 0 ? {} : { itemIndex: attempt.item_index }), reason
+                });
             }
             for (const step of steps.rows) {
                 await appendEvent(client, executionId, 'step.cancelled', { stepId: step.step_id, reason });
@@ -498,16 +505,17 @@ export class ExecutionRepository {
                  RETURNING execution_id, step_id`,
                 [ids]
             );
-            const failedAttempts = await client.query<{ execution_id: string; step_id: string; attempt: number }>(
+            const failedAttempts = await client.query<{ execution_id: string; step_id: string; attempt: number; item_index: number }>(
                 `UPDATE execution_attempts SET status = 'failed', finished_at = clock_timestamp(),
                     error_code = 'SERVER_INTERRUPTED', error_message = 'Server stopped during this attempt.'
                  WHERE execution_id = ANY($1::uuid[]) AND status = 'running'
-                 RETURNING execution_id, step_id, attempt`,
+                 RETURNING execution_id, step_id, attempt, item_index`,
                 [ids]
             );
             for (const attempt of failedAttempts.rows) {
                 await appendEvent(client, attempt.execution_id, 'attempt.failed', {
                     stepId: attempt.step_id, attempt: attempt.attempt,
+                    ...(attempt.item_index < 0 ? {} : { itemIndex: attempt.item_index }),
                     errorCode: 'SERVER_INTERRUPTED', error: 'Server stopped during this attempt.'
                 });
             }
@@ -635,6 +643,7 @@ async function enqueueTerminalWebhooks(client: DatabaseClient, row: ExecutionRow
 function mapAttempt(row: AttemptRow): StepAttemptLog {
     return compact({
         attempt: row.attempt,
+        itemIndex: row.item_index < 0 ? undefined : row.item_index,
         status: row.status,
         startedAt: row.started_at.toISOString(),
         finishedAt: row.finished_at?.toISOString(),

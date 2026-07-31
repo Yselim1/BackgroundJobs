@@ -53,7 +53,13 @@ export class JobService {
             levels: levels.map((ids, index) => ({
                 level: index + 1,
                 steps: ids.map(id => byId.get(id)).filter((step): step is Step => step !== undefined).map(step => ({
-                    id: step.ID, name: step.NAME, type: step.TYPE, order: step.ORDER, dependsOn: step.DEPENDS_ON ?? []
+                    id: step.ID,
+                    name: step.NAME,
+                    type: step.TYPE,
+                    order: step.ORDER,
+                    dependsOn: step.DEPENDS_ON ?? [],
+                    ...(step.WHEN === undefined ? {} : { when: step.WHEN }),
+                    ...(step.FOREACH === undefined ? {} : { foreach: step.FOREACH })
                 }))
             }))
         };

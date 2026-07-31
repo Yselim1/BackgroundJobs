@@ -355,6 +355,75 @@ describe('HTTP execution API', () => {
             await new Promise<void>(resolve => webhookServer.close(() => resolve()));
         }
     });
+
+    it('persists fan-out item attempts, conditional skips, plans, and platform overview data', async () => {
+        const definition = job('platform-workflow', 'inactive');
+        definition.MAX_CONCURRENCY = 2;
+        definition.STEPS = [
+            {
+                ORDER: 1,
+                ID: 'map',
+                NAME: 'Map items',
+                TYPE: 'SCRIPT',
+                FOREACH: { ITEMS: 'input.items', MAX_CONCURRENCY: 4 },
+                STEP_PARAMS: { CODE: 'context => ({ value: context.item, index: context.index })' }
+            },
+            {
+                ORDER: 2,
+                ID: 'optional',
+                NAME: 'Optional branch',
+                TYPE: 'SCRIPT',
+                WHEN: { PATH: 'input.runOptional' },
+                STEP_PARAMS: { CODE: '() => ({ ran: true })' }
+            },
+            {
+                ORDER: 3,
+                ID: 'after',
+                NAME: 'After branch',
+                TYPE: 'SCRIPT',
+                DEPENDS_ON: ['optional'],
+                STEP_PARAMS: { CODE: 'context => ({ skippedValue: context.optional })' }
+            }
+        ];
+        await jobs.create(definition);
+        const queued = await executions.enqueueManual(definition.id, {
+            items: ['alpha', 'beta', 'gamma'],
+            runOptional: false
+        });
+        const manager = new JobExecutionManager(executions, undefined, 1, 25);
+        const app = createApp({ pool, jobs: new JobService(jobs, executions), executions, manager });
+        try {
+            await manager.start();
+            await waitFor(async () => (await executions.getSummary(queued.executionId))?.status === 'success');
+            const detail = await executions.getDetail(queued.executionId);
+            expect(detail?.stepResults.map?.output).toEqual([
+                { value: 'alpha', index: 0 },
+                { value: 'beta', index: 1 },
+                { value: 'gamma', index: 2 }
+            ]);
+            expect(detail?.stepResults.map?.attempts.map(attempt => attempt.itemIndex)).toEqual([0, 1, 2]);
+            expect(detail?.stepResults.optional?.status).toBe('skipped');
+            expect(detail?.stepResults.after?.status).toBe('success');
+
+            await request(app).get('/api/jobs/platform-workflow/plan').expect(200)
+                .expect(response => {
+                    const steps = response.body.levels.flatMap((level: { steps: unknown[] }) => level.steps);
+                    expect(steps[0].foreach).toEqual({ ITEMS: 'input.items', MAX_CONCURRENCY: 4 });
+                    expect(steps[1].when).toEqual({ PATH: 'input.runOptional' });
+                });
+            await request(app).get('/api/platform/overview').expect(200)
+                .expect(response => {
+                    expect(response.body.jobs.total).toBe(1);
+                    expect(response.body.executions.success24h).toBe(1);
+                });
+            await request(app).get('/api/platform/executors').expect(200)
+                .expect(response => expect(response.body.items).toEqual(
+                    expect.arrayContaining(['RESTAPI', 'SCRIPT', 'COMMAND', 'PYTHON'])
+                ));
+        } finally {
+            await manager.shutdown(1_000);
+        }
+    });
 });
 
 function job(id: string, status: Job['status'] = 'active'): Job {

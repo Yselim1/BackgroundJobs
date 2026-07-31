@@ -139,8 +139,8 @@ export class JobExecutionManager {
     private observerFor(executionId: string): ExecutionObserver {
         return {
             stepStarted: async (step: Step, startedAt: Date) => this.executions.stepStarted(executionId, step.ID, startedAt),
-            attemptStarted: async (step: Step, attempt: number, startedAt: Date) =>
-                this.executions.attemptStarted(executionId, step.ID, attempt, startedAt),
+            attemptStarted: async (step: Step, attempt: number, startedAt: Date, itemIndex?: number) =>
+                this.executions.attemptStarted(executionId, step.ID, attempt, startedAt, itemIndex),
             attemptFinished: async (step: Step, attempt: StepAttemptLog) =>
                 this.executions.attemptFinished(executionId, step.ID, attempt),
             stepFinished: async (step: StepLog) => this.executions.stepFinished(executionId, step)

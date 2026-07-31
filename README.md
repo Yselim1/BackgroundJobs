@@ -194,6 +194,89 @@ npm run retention -- --days 90 --batch-size 500 --confirm
 
 Associated steps, attempts, progress events, and webhook deliveries are removed in the same database cascade.
 
+## Conditional and fan-out workflows
+
+Any ordinary step can be guarded with `WHEN` or expanded with `FOREACH`; built-in and plugin executors receive the same workflow behavior.
+
+~~~json
+{
+  "MAX_CONCURRENCY": 4,
+  "STEPS": [
+    {
+      "ORDER": 1,
+      "ID": "notify",
+      "NAME": "Notify accounts",
+      "TYPE": "RESTAPI",
+      "WHEN": {
+        "PATH": "input.notificationsEnabled",
+        "OPERATOR": "equals",
+        "VALUE": true
+      },
+      "FOREACH": {
+        "ITEMS": "input.accounts",
+        "MAX_CONCURRENCY": 3
+      },
+      "STEP_PARAMS": {
+        "URL": "https://example.internal/accounts/{{item.id}}/notify",
+        "METHOD": "POST",
+        "BODY": {
+          "position": "{{index}}"
+        }
+      }
+    }
+  ]
+}
+~~~
+
+Workflow paths are safe dot-separated paths rooted at `input` or at a step listed directly in `DEPENDS_ON`. Supported condition operators are `equals`, `not_equals`, `exists`, `not_exists`, `truthy`, `falsy`, numeric/string comparisons, and `contains`.
+
+A false condition records the step as `skipped`, stores `null` in its workflow context, and satisfies downstream dependencies. Fan-out sources must resolve to arrays. Each item receives `item` and zero-based `index` context roots; outputs retain source order, retries are persisted with their item index, and all executor calls share the job-level `MAX_CONCURRENCY` ceiling.
+
+## Executor plugin SDK
+
+Applications can register executor types before starting workers:
+
+~~~ts
+import {
+  defineExecutorPlugin,
+  registerExecutorPlugin
+} from "backgroundjobs-framework/sdk";
+
+registerExecutorPlugin(defineExecutorPlugin({
+  type: "EMAIL",
+  validate: (params, path) =>
+    typeof params.TO === "string"
+      ? []
+      : [{ path: path + ".TO", code: "TO_REQUIRED", message: "TO must be a string." }],
+  executor: {
+    async execute(step, context, { signal }) {
+      // Respect signal and return a JSON-serializable value.
+      return { delivered: true };
+    }
+  }
+}));
+~~~
+
+Plugin types are normalized to uppercase and cannot replace an existing registration. Plugin validators participate in normal job validation. Every process that may execute a plugin-backed job must register the same plugin during startup.
+
+## Independent dashboard
+
+The operational dashboard is an independent React/Vite project in `dashboard/`. It has its own dependencies, build, tests, and dev server so frontend development and deployment are not coupled to the backend runtime.
+
+~~~bash
+# Terminal 1: backend
+npm run dev
+
+# Terminal 2: dashboard (proxies /api to localhost:3000)
+cd dashboard
+npm install
+npm run dev
+~~~
+
+For production, run `npm run build` inside `dashboard/` and serve its `dist/` output behind the same origin/reverse proxy as the API. `VITE_API_BASE_URL` can point at another API origin once that deployment has an explicit CORS and authentication policy.
+
+The dashboard uses `GET /api/platform/overview` for operational counts and `GET /api/platform/executors` for registered executor types. It supports execution filtering, live SSE updates, job runs, cancellation, fan-out attempt visibility, and workflow progress inspection. Authentication and identity-aware audit trails remain deferred to the security milestone.
+
 ## Adding Kafka or RabbitMQ later
 
 Keep PostgreSQL authoritative and publish from the transactional event/outbox records introduced in this milestone. RabbitMQ can wake work-queue consumers; Kafka can carry lifecycle events for audit, analytics, notifications, and downstream systems. A consumer should receive only an execution ID, claim/verify it in PostgreSQL, and be idempotent under at-least-once delivery. Cancellation messages are hints—the persisted `cancel_requested_at` value remains decisive.

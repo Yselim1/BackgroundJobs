@@ -5,6 +5,7 @@ import { AppError } from './errors.js';
 import { createExecutionsController } from './controllers/executionsController.js';
 import { createJobsController } from './controllers/jobsController.js';
 import { createLogsController } from './controllers/logsController.js';
+import { createPlatformController } from './controllers/platformController.js';
 import { ExecutionRepository } from './repositories/ExecutionRepository.js';
 import { JobExecutionManager } from './services/JobExecutionManager.js';
 import { JobService } from './services/JobService.js';
@@ -38,6 +39,7 @@ export function createApp(dependencies: AppDependencies): express.Express {
     app.use('/api/jobs', createJobsController(dependencies.jobs));
     app.use('/api/executions', createExecutionsController(dependencies.executions, dependencies.manager));
     app.use('/api/logs', createLogsController(dependencies.executions));
+    app.use('/api/platform', createPlatformController(dependencies.pool));
     app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
         if (error instanceof JobValidationError) {
             res.status(422).json({ error: 'Job definition validation failed.', code: 'JOB_VALIDATION_FAILED', details: error.issues });

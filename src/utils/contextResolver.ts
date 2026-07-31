@@ -167,7 +167,7 @@ function resolveContextPath(
         );
     }
   }
-  // The first path segment is a referenced step ID or the reserved input root.
+  // The first path segment is a referenced step ID or a reserved runtime root.
   const stepId = pathSegments[0];
   if (!stepId) {
       throw new Error(`Invalid context path: "${rawPath.trim()}".`);
@@ -181,6 +181,8 @@ function resolveContextPath(
   if (
       options.allowedStepIds &&
       stepId !== 'input' &&
+      stepId !== 'item' &&
+      stepId !== 'index' &&
       !options.allowedStepIds.has(stepId)
   ) {
       throw new Error(
