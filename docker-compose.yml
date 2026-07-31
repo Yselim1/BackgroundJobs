@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:18.4-alpine
+    environment:
+      POSTGRES_DB: backgroundjobs
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d backgroundjobs"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - backgroundjobs-postgres:/var/lib/postgresql
+
+volumes:
+  backgroundjobs-postgres:

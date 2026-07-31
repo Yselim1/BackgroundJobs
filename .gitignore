@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .env
-
-# Ignore logs.json file since it changes frequently.
-logs.json 
+*.log
+logs.json
+coverage/
+tmp/

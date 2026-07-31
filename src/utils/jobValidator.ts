@@ -1,6 +1,7 @@
 import {ExecutorRegistry } from '../executors/ExecutorRegistry.js';
 import type{Job, JobValidationResult, ValidationIssue} from '../types/index.js';
 import {findDependencyCycle, type DependencyNode} from './jobGraph.js';
+import { assertValidCron, assertValidTimezone } from './cron.js';
 const HTTP_METHODS = new Set([
     'GET',
     'POST',
@@ -51,8 +52,14 @@ export function validateJobDefinition(input: unknown): JobValidationResult {
     validateRequiredString(normalizedInput.id, 'id', 'JOB_ID_REQUIRED', errors);
     validateRequiredString(normalizedInput.name, 'name', 'JOB_NAME_REQUIRED', errors);
 
+    if (Object.hasOwn(normalizedInput, 'last_run')) {
+        addIssue(errors, 'last_run', 'READ_ONLY_FIELD', 'last_run is read-only.');
+    }
+    if (Object.hasOwn(normalizedInput, 'next_run')) {
+        addIssue(errors, 'next_run', 'READ_ONLY_FIELD', 'next_run is read-only.');
+    }
     validateJobStatus(normalizedInput.status, errors);
-    validateSchedule(normalizedInput.schedule, errors);
+    validateSchedule(normalizedInput.schedule, normalizedInput.timezone, errors);
     validateExecutionSettings(normalizedInput, errors);
 
     const rawSteps = normalizedInput.STEPS;
@@ -216,6 +223,13 @@ function normalizeJobDefinition(input: unknown): unknown {
         normalizedJob.status = 'active';
     }
 
+    if (typeof normalizedJob.timezone === 'string') {
+        normalizedJob.timezone = normalizedJob.timezone.trim();
+    }
+    if (normalizedJob.timezone === undefined) {
+        normalizedJob.timezone = 'UTC';
+    }
+
     if(Array.isArray(input.STEPS)) {
         normalizedJob.STEPS = input.STEPS.map((rawStep, index): unknown => {
             if(!isRecord(rawStep)) {
@@ -267,15 +281,35 @@ function validateJobStatus(value: unknown, errors: ValidationIssue[]): void {
     }
 }
 
-function validateSchedule(value: unknown, errors: ValidationIssue[]): void {
-    if(value === undefined ) return;
-
-    if(typeof value !== 'string' || value.trim().length === 0) {
+function validateSchedule(value: unknown, timezoneValue: unknown, errors: ValidationIssue[]): void {
+    if (typeof timezoneValue !== 'string' || timezoneValue.trim().length === 0) {
+        addIssue(errors, 'timezone', 'INVALID_TIMEZONE', 'timezone must be a non-empty IANA timezone identifier.');
+        return;
+    }
+    try {
+        assertValidTimezone(timezoneValue);
+    } catch (error: unknown) {
+        addIssue(errors, 'timezone', 'INVALID_TIMEZONE', error instanceof Error ? error.message : String(error));
+        return;
+    }
+    if (value === undefined) return;
+    if (typeof value !== 'string' || value.trim().length === 0) {
         addIssue(errors, 'schedule', 'INVALID_SCHEDULE', 'schedule must be a non-empty string.');
+        return;
+    }
+    try {
+        assertValidCron(value, timezoneValue);
+    } catch (error: unknown) {
+        addIssue(errors, 'schedule', 'INVALID_SCHEDULE', error instanceof Error ? error.message : String(error));
     }
 }
 
 function validateExecutionSettings(job: Record<string, unknown>, errors: ValidationIssue[]): void {
+    if (job.TIMEOUT_MS !== undefined &&
+        (typeof job.TIMEOUT_MS !== 'number' || !Number.isInteger(job.TIMEOUT_MS) || job.TIMEOUT_MS <= 0)
+    ) {
+        addIssue(errors, 'TIMEOUT_MS', 'INVALID_JOB_TIMEOUT', 'TIMEOUT_MS must be a positive integer.');
+    }
     if(job.MAX_CONCURRENCY !== undefined 
         && (typeof job.MAX_CONCURRENCY !== 'number' ||
             !Number.isInteger(job.MAX_CONCURRENCY) ||
@@ -462,6 +496,11 @@ function validateCommandParameters(params: Record<string, unknown>, path: string
 
 function validateCodeParameters(params: Record<string, unknown>, path: string, errors: ValidationIssue[]): void {
     validateRequiredString(params.CODE, `${path}.CODE`, 'CODE_REQUIRED', errors);
+    if (params.TIMEOUT_MS !== undefined &&
+        (typeof params.TIMEOUT_MS !== 'number' || !Number.isInteger(params.TIMEOUT_MS) || params.TIMEOUT_MS < 1)
+    ) {
+        addIssue(errors, `${path}.TIMEOUT_MS`, 'INVALID_TIMEOUT', 'TIMEOUT_MS must be a positive integer.');
+    }
 }
 
 function validateScalarRecord(value: unknown, path: string, errors: ValidationIssue[]): void {

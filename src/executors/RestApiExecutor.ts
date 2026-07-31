@@ -1,6 +1,8 @@
 import { type IStepExecutor } from './IStepExecutor.js';
 import type { Step, HttpMethod, RestApiStepParams, RestApiResponseType, RestApiStepOutput } from '../types/index.js';
 import { resolveContextTemplates} from '../utils/contextResolver.js';
+import type { ExecutorOptions } from './IStepExecutor.js';
+import { abortError } from '../errors.js';
 
 const DEFAULT_TIMEOUT_MS = 10000;
 
@@ -15,7 +17,7 @@ const SUPPORTED_HTTP_METHODS = new Set<HttpMethod>([
 ]);
 
 export class RestApiExecutor implements IStepExecutor {
-    async execute(step: Step, context: Record<string, any>): Promise<RestApiStepOutput> {
+    async execute(step: Step, context: Record<string, unknown>, options: ExecutorOptions): Promise<RestApiStepOutput> {
         let timeoutMs = DEFAULT_TIMEOUT_MS;
 
         try{
@@ -79,7 +81,7 @@ export class RestApiExecutor implements IStepExecutor {
             const requestInit: RequestInit = {
                   method,
                   headers,
-                  signal: AbortSignal.timeout(timeoutMs)
+                  signal: AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)])
               };
 
             if (body !== undefined) {
@@ -107,6 +109,9 @@ export class RestApiExecutor implements IStepExecutor {
         }catch (error: unknown) {
             const resolvedError = error instanceof Error ? error : new Error(String(error));
             
+            if (options.signal.aborted) {
+                throw abortError(options.signal);
+            }
             if (resolvedError.name === 'TimeoutError' || resolvedError.name === 'AbortError') {
 
                 throw new Error(`RESTAPI execution failed: request timed out ` + `after ${timeoutMs}ms.`);

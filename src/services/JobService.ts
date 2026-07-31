@@ -1,119 +1,63 @@
-import { JobStore } from '../storage/JobStore.js';
-import {type Job, type JobLog, type JobValidationResult, type JobExecutionPlan, type Step} from '../types/index.js';
-import {assertValidJobDefinition, JobValidationError, validateJobDefinition} from '../utils/jobValidator.js';
+import { AppError } from '../errors.js';
+import { ExecutionRepository } from '../repositories/ExecutionRepository.js';
+import { JobRepository } from '../repositories/JobRepository.js';
+import type { ExecutionSummary, Job, JobExecutionPlan, JobValidationResult, JobView, Step } from '../types/index.js';
 import { buildDependencyLevels } from '../utils/jobGraph.js';
-import {jobExecutionManager as sharedJobExecutionManager, type JobExecutionManager, JobExecutionManagerError} from './JobExecutionManager.js';
-
-export type JobServiceErrorCode = 'JOB_NOT_FOUND' | 'JOB_ALREADY_EXISTS';
-
-export class JobServiceError extends Error {
-    constructor(
-        message: string,
-        readonly statusCode: number,
-        readonly code: JobServiceErrorCode
-    ) {
-        super(message);
-        this.name = 'JobServiceError';
-    }
-}
+import { assertValidJobDefinition, JobValidationError, validateJobDefinition } from '../utils/jobValidator.js';
 
 export class JobService {
-    constructor(
-        private readonly jobStore = new JobStore(),
-        private readonly executionManager:JobExecutionManager = sharedJobExecutionManager
-    ) {}
+    constructor(private readonly jobs: JobRepository, private readonly executions: ExecutionRepository) {}
 
-    validateJob(input: unknown): JobValidationResult {
-        return validateJobDefinition(input);
+    validateJob(input: unknown): JobValidationResult { return validateJobDefinition(input); }
+
+    async createJob(input: unknown): Promise<JobView> {
+        return this.jobs.create(assertValidJobDefinition(input));
     }
 
-    async createJob(input: unknown): Promise<Job> {
-        const job = assertValidJobDefinition(input);
-        const created = await this.jobStore.create(job);
-        if (!created) {
-            throw new JobServiceError(`Job with id ${job.id} already exists.`, 409, 'JOB_ALREADY_EXISTS');
-        }
-        return job;
-    }
-
-    async replaceJob(jobId: string, input: unknown): Promise<Job> {
+    async replaceJob(jobId: string, input: unknown): Promise<JobView> {
         const replacement = assertValidJobDefinition(input);
-
         if (replacement.id !== jobId) {
-            throw new JobValidationError([
-                {
-                    path: 'id',
-                    code: 'JOB_ID_MISMATCH',
-                    message:`Body job ID "${replacement.id}" does not ` + `match path job ID "${jobId}".`
-                }
-            ]);
+            throw new JobValidationError([{
+                path: 'id', code: 'JOB_ID_MISMATCH',
+                message: `Body job ID ${replacement.id} does not match path job ID ${jobId}.`
+            }]);
         }
-        this.assertJobCanBeModified(jobId, 'update');
-
-        const replaced = await this.jobStore.replace(jobId, replacement);
-        if (!replaced) {
-            throw new JobServiceError(`Job with id ${jobId} not found.`, 404, 'JOB_NOT_FOUND');
-        }
-
-        return replacement;
+        return this.jobs.replace(jobId, replacement);
     }
 
-    async deleteJob(jobId: string): Promise<void> {
-        this.assertJobCanBeModified(jobId, 'delete');
-        const deleted = await this.jobStore.deleteById(jobId);
-        if (!deleted) {
-            throw new JobServiceError(`Job with id ${jobId} not found.`, 404, 'JOB_NOT_FOUND');
-        }
-    }
+    async deleteJob(jobId: string): Promise<void> { await this.jobs.delete(jobId); }
 
-    async startJob(jobId: string): Promise<JobLog> {
-      const job = await this.getJobWithID(jobId);
-      return this.executionManager.start(job);
-    }
+    async startJob(jobId: string): Promise<ExecutionSummary> { return this.executions.enqueueManual(jobId); }
 
-    async getJobWithID(id: string): Promise<Job> {
-        const job = await this.jobStore.getById(id);
-        if (!job) {
-            throw new JobServiceError(`Job with id ${id} not found.`, 404, 'JOB_NOT_FOUND');
-        }
+    async getJobWithID(id: string): Promise<JobView> {
+        const job = await this.jobs.getById(id);
+        if (job === undefined) throw new AppError('JOB_NOT_FOUND', `Job with id ${id} not found.`, 404);
         return job;
     }
 
-    async getAllJobs(): Promise<Job[]> {
-        return this.jobStore.getAll();
-    }
+    async getAllJobs(): Promise<JobView[]> { return this.jobs.getAll(); }
 
     async getExecutionPlan(jobId: string): Promise<JobExecutionPlan> {
-        const job = await this.getJobWithID(jobId);
-
-        const sortedSteps = [...job.STEPS].sort((firstStep, secondStep) => firstStep.ORDER - secondStep.ORDER);
-
-        const stepsById = new Map(sortedSteps.map(step => [step.ID, step]));
-
-        const dependencyLevels = buildDependencyLevels(sortedSteps.map(step => ({id: step.ID,dependsOn: step.DEPENDS_ON ?? []})));
-
+        const view = await this.getJobWithID(jobId);
+        const job = stripReadOnly(view);
+        const sorted = [...job.STEPS].sort((first, second) => first.ORDER - second.ORDER);
+        const byId = new Map(sorted.map(step => [step.ID, step]));
+        const levels = buildDependencyLevels(sorted.map(step => ({ id: step.ID, dependsOn: step.DEPENDS_ON ?? [] })));
         return {
             jobId: job.id,
             maxConcurrency: job.MAX_CONCURRENCY ?? 10,
             failurePolicy: job.FAILURE_POLICY ?? 'fail_fast',
-            levels: dependencyLevels.map((stepIds, index) => {const levelSteps = stepIds.map(stepId => stepsById.get(stepId))
-                .filter((step): step is Step => step !== undefined)
-                .sort((firstStep, secondStep) =>firstStep.ORDER - secondStep.ORDER);
-            return {
+            levels: levels.map((ids, index) => ({
                 level: index + 1,
-                steps: levelSteps.map(step => ({id: step.ID, name: step.NAME, type: step.TYPE, order: step.ORDER, dependsOn: step.DEPENDS_ON ?? []}))
-            };})
+                steps: ids.map(id => byId.get(id)).filter((step): step is Step => step !== undefined).map(step => ({
+                    id: step.ID, name: step.NAME, type: step.TYPE, order: step.ORDER, dependsOn: step.DEPENDS_ON ?? []
+                }))
+            }))
         };
     }
+}
 
-    private assertJobCanBeModified(jobId: string, operation: 'update' | 'delete'): void {
-        if (!this.executionManager.isJobRunning(jobId)) return;
-
-        throw new JobExecutionManagerError(
-          `Cannot ${operation} job with id ${jobId} ` +
-          'while it is running.',
-          409,
-          'JOB_IS_RUNNING');
-    }
-
+function stripReadOnly(view: JobView): Job {
+    const { last_run: _last, next_run: _next, created_at: _created, updated_at: _updated, ...job } = view;
+    return job;
 }

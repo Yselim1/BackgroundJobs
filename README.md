@@ -1,312 +1,135 @@
 # Background Jobs Framework
 
-## Overview
+A Node.js 24+ and TypeScript background-job service with PostgreSQL-backed definitions, durable execution history, six-field cron scheduling, a transactional work queue, bounded concurrency, retries, cancellation, and job deadlines.
 
-This project is a Node.js and TypeScript based background job framework.
+PostgreSQL is the source of truth. No job or execution exists only in process memory, and the reference file in `examples/jobs.json` is never imported at runtime.
 
-It allows you to validate and manage job definitions through an API, execute jobs asynchronously, inspect dependency-based execution plans, retry failed steps, and access live or completed execution logs.
+## Start locally
 
-## Requirements
-
-- Node.js 24 or newer
-- npm
-
-Visit: https://nodejs.org/en/download/ to download Node.js
-
-Check if the installations are successfull:
-
-```bash
-node -v
-npm -v
-```
-
-This project uses TypeScript and ES Modules.
-
-## Install Dependencies
-
-From project root, run:
+Requirements: Node.js 24+, npm, Docker, and Docker Compose.
 
 ```bash
 npm install
-```
-
-## Run in Development Mode
-
-```bash
+docker compose up -d postgres
+npm run migrate
 npm run dev
 ```
 
-This starts the server with file watching enabled.
+The default connection is `postgres://postgres:postgres@localhost:5432/backgroundjobs`; copy `.env.example` into your environment when different values are needed. Environment variables are not automatically loaded from a file.
 
-Default server URL:
+Configuration:
 
-```txt
-http://localhost:3000
-```
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `DATABASE_URL` | local Compose URL | PostgreSQL connection string |
+| `DB_POOL_MAX` | `10` | Maximum pooled database connections |
+| `WORKER_CONCURRENCY` | `4` | Maximum concurrently running jobs |
+| `SCHEDULER_POLL_MS` | `1000` | Scheduler and dispatcher poll interval |
+| `SHUTDOWN_GRACE_MS` | `10000` | Grace before running work is interrupted |
+| `PORT` | `3000` | HTTP port |
 
-## Build the Project
+Application startup checks the migration version and exits with an actionable error if the database is behind. Migrations are numbered SQL files and `npm run migrate` serializes concurrent migrators with a PostgreSQL advisory lock.
 
-```bash
-npm run build
-```
-
-This compiles the TypeScript files into the `dist/` folder.
-
-## Run the Built Project
-
-```bash
-npm start
-```
-
-## Job Definitions
-
-Jobs are stored in:
-
-```txt
-jobs.json
-```
-Job definitions can be created, replaced, and deleted through the API without restarting the server.
-
-Definitions are normalized and validated before storage or execution. Invalid dependencies and circular dependency
-graphs are rejected.
-
-JSON mutations are serialized and written atomically within a single Node.js process. This storage is not designed for
-multiple server processes writing to the same files.
-
-Each job can contain multiple steps.
-
-Example step fields:
+## Job definition
 
 ```json
 {
-  "ORDER": 1,
-  "ID": "550e8400-e29b-41d4-a716-446655440001",
-  "NAME": "Fetch cat fact",
-  "TYPE": "RESTAPI",
-  "STEP_PARAMS": {
-    "URL": "https://catfact.ninja/fact",
-    "METHOD": "GET"
-  }
-}
-```
-
-### Scheduling
-
-`schedule`, `last_run`, and `next_run` in job definitions are currently stored as job metadata.
-
-The framework does not automatically schedule jobs yet. Jobs are started through:
-
-```txt
-POST /api/jobs/:id/run
-```
-
-### Step Dependencies
-
-Use `DEPENDS_ON` to make a step wait for another step.
-Successful step outputs are stored in the job context using the step ID.
-```json
-{
-  "ORDER": 2,
-  "ID": "parse-cat-fact",
-  "NAME": "Parse cat fact",
-  "TYPE": "SCRIPT",
-  "DEPENDS_ON": ["fetch-cat-fact"],
-  "STEP_PARAMS": {
-    "CODE": "((context) => { const response = context['fetch-cat-fact']; return response.data; })"
-  }
-}
-```
-Steps without dependencies can run independently.
-A step is skipped if one of its dependencies fails, is skipped, or is cancelled.
-
-### Context Templates
-
-REST API steps can use outputs from declared dependency steps:
-
-```json
-{
-  "DEPENDS_ON": ["load-post"],
-  "STEP_PARAMS": {
-    "URL": "https://example.com/posts",
-    "METHOD": "POST",
-    "BODY": {
-      "title": "Copy: {{load-post.data.title}}",
-      "userId": "{{load-post.data.userId}}"
-    }
-  }
-}
-```
-
-An exact template preserves the original value type. Templates inside larger strings produce strings.
-
-The referenced step must be listed in DEPENDS_ON. Step IDs used in templates should not contain dots.
-
-## Execution Settings
-
-Jobs support the following execution settings:
-```json
-{
+  "id": "daily-report",
+  "name": "Daily report",
+  "status": "active",
+  "schedule": "0 0 8 * * *",
+  "timezone": "Europe/Istanbul",
+  "TIMEOUT_MS": 300000,
   "MAX_CONCURRENCY": 2,
-  "FAILURE_POLICY": "continue_independent / fail_fast",
+  "FAILURE_POLICY": "fail_fast",
   "DEFAULT_STEP_RETRY": {
     "MAX_ATTEMPTS": 3,
     "DELAY_MS": 1000,
-    "BACKOFF": "fixed"
-  }
+    "BACKOFF": "exponential"
+  },
+  "STEPS": [
+    {
+      "ORDER": 1,
+      "ID": "fetch",
+      "NAME": "Fetch data",
+      "TYPE": "RESTAPI",
+      "STEP_PARAMS": {
+        "URL": "https://example.internal/data",
+        "METHOD": "GET",
+        "TIMEOUT_MS": 10000
+      }
+    },
+    {
+      "ORDER": 2,
+      "ID": "transform",
+      "NAME": "Transform",
+      "TYPE": "SCRIPT",
+      "DEPENDS_ON": ["fetch"],
+      "STEP_PARAMS": {
+        "CODE": "(context) => ({ count: context.fetch.data.length })"
+      }
+    }
+  ]
 }
 ```
 
-- *`MAX_CONCURRENCY:`* controls how many runnable steps can execute at the same time. The default is 10.
-- *`FAILURE_POLICY:`* can be fail_fast or continue_independent. The default is fail_fast.
-- *`fail_fast:`* cancels pending steps after a failure. Steps already running are allowed to finish.
-- *`continue_independent:`* allows independent steps to continue. Steps that depend on a failed step are skipped.
-- *`FAIL_JOB_ON_FAILURE:`* true makes a step stop the job even when continue_independent is used.
+Schedules must contain exactly six fields, including seconds. `timezone` is an IANA identifier and defaults to `UTC`. Inactive jobs are not scheduled but can be run manually. `last_run` and `next_run` are server-managed response fields and are rejected in create/replace bodies.
 
-### Retry Policy
+Supported step types are `RESTAPI`, `SCRIPT`, `COMMAND`, and `PYTHON`. Step dependencies, retry settings, job step concurrency, `fail_fast`, and `continue_independent` are preserved. Persisted outputs must be JSON-serializable; top-level `undefined` is stored as SQL null, while circular values, `BigInt`, functions, symbols, and non-finite numbers fail with `OUTPUT_NOT_SERIALIZABLE`.
 
-A step can override the job retry policy:
+## HTTP API
 
-```json
-"RETRY": {
-   "MAX_ATTEMPTS": 3,
-   "DELAY_MS": 500,
-   "BACKOFF": "exponential"
- }
-```
+| Method | Route | Description |
+| --- | --- | --- |
+| `GET` | `/health` | Process liveness |
+| `GET` | `/health/ready` | Database, schema, scheduler, and dispatcher readiness |
+| `GET` | `/api/jobs` | List jobs |
+| `POST` | `/api/jobs/validate` | Validate a definition |
+| `POST` | `/api/jobs` | Create a job |
+| `GET` | `/api/jobs/:id` | Get a job |
+| `PUT` | `/api/jobs/:id` | Replace a job |
+| `DELETE` | `/api/jobs/:id` | Delete a job while preserving history |
+| `GET` | `/api/jobs/:id/plan` | Inspect dependency levels |
+| `POST` | `/api/jobs/:id/run` | Queue a manual execution (`202`) |
+| `GET` | `/api/executions` | Filter and cursor-page execution summaries |
+| `GET` | `/api/executions/:id` | Get an execution with steps and attempts |
+| `POST` | `/api/executions/:id/cancel` | Cancel queued or running work |
+| `GET` | `/api/logs` | Legacy array alias |
+| `GET` | `/api/logs/:id` | Legacy detail alias |
 
-`MAX_ATTEMPTS:` includes the first attempt. A value of 3 means one initial attempt and up to two retries.
+Execution list parameters are `jobId`, `status`, `limit` (default 50, maximum 200), and opaque `cursor`. Ordering is `requestedAt DESC, executionId DESC`.
 
-Supported backoff values are `fixed` and `exponential`.
+A manual run returns immediately:
 
-## REST API Steps
-
-Supported methods:
-`
-GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
-`
-
-
-Available parameters:
-```
-URL
-METHOD
-HEADERS
-QUERY
-BODY
-TIMEOUT_MS
-RESPONSE_TYPE
-CAPTURE_RESPONSE_HEADERS
-```
-
-`METHOD` defaults to ``GET`` and ``TIMEOUT_MS`` defaults to ``10000``.
-
-Object and array bodies are sent as JSON. GET and HEAD requests cannot contain a body.
-
-`RESPONSE_TYPE` supports auto, json, and text.
-
-A successful request returns:
 ```json
 {
-  "status": 200,
-  "statusText": "OK",
-  "data": {}
+  "executionId": "d4f84ca4-d41f-4aac-944a-d21e45c50ac6",
+  "logId": "d4f84ca4-d41f-4aac-944a-d21e45c50ac6",
+  "jobId": "daily-report",
+  "trigger": "manual",
+  "status": "queued",
+  "requestedAt": "2026-07-31T12:00:00.000Z"
 }
 ```
 
-Selected response headers are included when ```CAPTURE_RESPONSE_HEADERS:["content-type",...]``` is provided. Unsuccessful HTTP responses cause
-the step to fail.
+The response has `Location: /api/executions/:executionId`. Replacing or deleting a job with queued/running work returns `409 JOB_IS_ACTIVE`. Cancelling a cancelled execution is idempotent; cancelling another terminal status returns `409 EXECUTION_NOT_CANCELLABLE`.
 
+## Scheduling and recovery
 
-## API Endpoints
+The scheduler locks due jobs transactionally. After downtime it records only the latest missed occurrence and advances directly to the next future time. If the job already has queued/running work, that occurrence is stored as terminal `skipped` with reason `overlap`. Scheduled occurrence and active-job uniqueness are database-enforced.
 
-```txt
-GET    /health
+Workers claim the oldest execution with `FOR UPDATE SKIP LOCKED`. On startup, orphaned `running` executions become `failed` with `SERVER_INTERRUPTED`; queued work remains eligible. Graceful shutdown stops scheduling/claiming, waits for the configured grace, and then aborts remaining executors. REST request signals are combined with request timeouts, and command/Python cancellation terminates spawned process trees.
 
-GET    /api/jobs
-POST   /api/jobs/validate
-POST   /api/jobs
-GET    /api/jobs/:id
-GET    /api/jobs/:id/plan
-PUT    /api/jobs/:id
-DELETE /api/jobs/:id
-POST   /api/jobs/:id/run
-
-GET    /api/logs
-GET    /api/logs/:id
-```
-
-`GET /api/jobs/:id/plan` returns dependency-based execution levels without running the job.
-
-Starting a job returns 202 Accepted, a logId, and a Location header:
+## Tests and build
 
 ```bash
-curl -X POST http://localhost:3000/api/jobs/example-job/run
+npm test
+npm run test:integration
+npm run build
 ```
 
-Use the returned log ID to read its progress:
-```bash
-curl http://localhost:3000/api/logs/LOG_ID
-```
+Unit tests cover cron/DST calculations, coalescing, abortable retries, job deadlines, and output serialization. Integration tests use Testcontainers PostgreSQL for migrations, repositories, queue lifecycle, restart reconciliation, API contracts, pagination, cancellation, and retained history; Docker must be running.
 
-A job cannot be started again, replaced, or deleted while it is running. These operations return 409 Conflict.
-  
-## Logs
+## Adding Kafka or RabbitMQ later
 
-Active execution logs are kept in memory and can be read through `GET /api/logs/:id`.
-
-Completed logs are stored in `logs.json`. The same endpoint continues to work after the execution finishes.
-
-A job log contains its status, duration, step results, attempts, outputs, errors, and skip reasons.
-
-Active execution state is not recovered after a server restart.
-
-Possible step statuses are:
-
-```txt
-pending
-running
-success
-failed
-skipped
-cancelled
-```
-
-Complete step failure details remain available in `stepResults`.
-
-
-## Available Step Types
-
-The executor registry currently supports:
-
-```txt
-RESTAPI
-SCRIPT (JavaScript)
-COMMAND (Host Operating System Shell)
-PYTHON
-```
-
-
-## Current Security Limitations
-
-This project is currently a proof of concept and is designed to run trusted job definitions.
-
-Do not expose the server to the public internet or allow untrusted users to create or modify jobs.
-
-The following security limitations currently exist:
-
-- The API has no authentication or authorization. Job creation, replacement, deletion, and execution endpoints must only be accessible to trusted users.
-- `COMMAND` steps run commands through the host operating system shell. They can execute any command available to the
-server process.
-- `COMMAND` steps inherit the server environment and can define their own working directory and environment variables.
-- `SCRIPT` steps use the Node.js `vm` module. It provides an isolated execution context, but it is not a security
-sandbox for untrusted code.
-- `PYTHON` steps execute Python code with the permissions of the server process.
-- `RESTAPI` steps can send requests to any address reachable by the server, including internal services.
-  
-
-For the current development stage:
-
-- Only use job definitions whose contents you trust and have reviewed.
-- Run the server locally or inside a trusted development environment.
-- Run the server with a non-administrator operating system account.
-- Do not store passwords, API keys, or other secrets directly in `jobs.json`.
+Keep PostgreSQL authoritative and add a transactional outbox written in the same transaction as each execution transition. RabbitMQ can wake work-queue consumers; Kafka can carry lifecycle events for audit, analytics, notifications, and downstream systems. A consumer should receive only an execution ID, claim/verify it in PostgreSQL, and be idempotent under at-least-once delivery. Cancellation messages are hints—the persisted `cancel_requested_at` value remains decisive.

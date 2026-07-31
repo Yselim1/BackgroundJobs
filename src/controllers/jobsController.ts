@@ -1,117 +1,34 @@
-import { Router, type Request, type Response } from 'express';
-import { JobService, JobServiceError } from '../services/JobService.js';
-import { JobValidationError } from '../utils/jobValidator.js';
-import { JobExecutionManagerError} from '../services/JobExecutionManager.js';
+import { Router, type NextFunction, type Request, type Response } from 'express';
+import { JobService } from '../services/JobService.js';
 
-const router = Router();
-const jobService = new JobService();
+export function createJobsController(jobService: JobService): Router {
+    const router = Router();
 
-router.get('/', async (req: Request, res: Response): Promise<void> => {
-    try {
-        const jobs = await jobService.getAllJobs();
-        res.status(200).json(jobs);
-    } catch (error: any) {
-        sendControllerError(res, error);
-    }
-});
-
-router.post('/validate', (req: Request,res: Response): void => {
-    const result =
-    jobService.validateJob(req.body);
-
-    res.status(result.valid ? 200 : 422).json(result);
-    }
-);
-
-router.post('/', async (req: Request, res: Response ): Promise<void> => {
-    try {
-        const job = await jobService.createJob(req.body);
-        res.status(201).json(job);
-    } catch (error: unknown) {
-        sendControllerError(res, error);
-    }
-});
-
-router.get('/:id/plan', async (req: Request, res: Response): Promise<void> => {
-    try {
-        const jobId = req.params.id as string;
-        const plan = await jobService.getExecutionPlan(jobId);
-
-        res.status(200).json(plan);
-    } catch (error: unknown) {
-        sendControllerError(res, error);
-    }
-});
-
-router.get('/:id', async (req: Request, res: Response): Promise<void> => {
-    try {
-        const jobId = req.params.id as string;
-        const job = await jobService.getJobWithID(jobId);
-
-        res.status(200).json(job);
-    } catch (error: any) {
-        sendControllerError(res, error);
-    }
-});
-
-router.put('/:id', async (req: Request, res: Response ): Promise<void> => {
-    try {
-        const jobId = req.params.id as string
-        const job = await jobService.replaceJob( jobId, req.body)
-        res.status(200).json(job);
-    } catch (error: unknown) {
-        sendControllerError(res, error);
-    }
-    }
-);
-
-router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
-    try {
-        const jobId = req.params.id as string;
-        await jobService.deleteJob(jobId);
-        res.status(204).send();
-    } catch (error: unknown) {
-        sendControllerError(res, error);
-    }
-    }
-);
-
-router.post('/:id/run', async (req: Request, res: Response): Promise<void> => {
-    try {
-        const jobId = req.params.id as string;
-        const initialLog = await jobService.startJob(jobId);
-
-        res.status(202).location(`/api/logs/${initialLog.logId}`).json({
-            message: `Job ${jobId} execution started.`,
-            logId: initialLog.logId,
-            jobId: initialLog.jobId,
-            status: initialLog.status,
-            startTime: initialLog.startTime
-        })
-    } catch (error: any) {
-        sendControllerError(res, error);
-    }
-});
-
-function sendControllerError( res: Response, error: unknown): void {
-    if (error instanceof JobValidationError) {
-        res.status(422).json({error: 'Job definition validation failed.',details: error.issues});
-        return;
-    }
-
-    if (error instanceof JobServiceError) {
-        res.status(error.statusCode).json({error: error.message, code: error.code});
-        return;
-    }
-
-    if (error instanceof JobExecutionManagerError) {
-        res.status(error.statusCode).json({ error: error.message, code: error.code});
-      return;
-    }
-    
-    const message = error instanceof Error ? error.message : String(error);
-
-    res.status(500).json({error: message});
+    router.get('/', route(async (_req, res) => { res.status(200).json(await jobService.getAllJobs()); }));
+    router.post('/validate', (req, res) => {
+        const result = jobService.validateJob(req.body);
+        res.status(result.valid ? 200 : 422).json(result);
+    });
+    router.post('/', route(async (req, res) => { res.status(201).json(await jobService.createJob(req.body)); }));
+    router.get('/:id/plan', route(async (req, res) => { res.status(200).json(await jobService.getExecutionPlan(req.params.id as string)); }));
+    router.get('/:id', route(async (req, res) => { res.status(200).json(await jobService.getJobWithID(req.params.id as string)); }));
+    router.put('/:id', route(async (req, res) => { res.status(200).json(await jobService.replaceJob(req.params.id as string, req.body)); }));
+    router.delete('/:id', route(async (req, res) => { await jobService.deleteJob(req.params.id as string); res.status(204).send(); }));
+    router.post('/:id/run', route(async (req, res) => {
+        const execution = await jobService.startJob(req.params.id as string);
+        res.status(202).location(`/api/executions/${execution.executionId}`).json({
+            executionId: execution.executionId,
+            logId: execution.executionId,
+            jobId: execution.jobId,
+            trigger: 'manual',
+            status: 'queued',
+            requestedAt: execution.requestedAt
+        });
+    }));
+    return router;
 }
 
-export default router;
+type Handler = (req: Request, res: Response) => Promise<void>;
+function route(handler: Handler): (req: Request, res: Response, next: NextFunction) => void {
+    return (req, res, next) => { void handler(req, res).catch(next); };
+}

@@ -1,22 +1,43 @@
-import express from 'express';
-import jobsController from './controllers/jobsController.js';
-import logsController from './controllers/logsController.js';
+import { createServer } from 'node:http';
+import { createApp } from './app.js';
+import { loadConfig } from './config.js';
+import { assertSchemaCurrent } from './db/migrations.js';
+import { createPool } from './db/pool.js';
+import { ExecutionRepository } from './repositories/ExecutionRepository.js';
+import { JobRepository } from './repositories/JobRepository.js';
+import { JobExecutionManager } from './services/JobExecutionManager.js';
+import { JobService } from './services/JobService.js';
 
-const app = express();
+const config = loadConfig();
+const pool = createPool(config.databaseUrl, config.dbPoolMax);
 
-app.use(express.json());
+try {
+    await assertSchemaCurrent(pool);
+    const jobRepository = new JobRepository(pool);
+    const executionRepository = new ExecutionRepository(pool);
+    const manager = new JobExecutionManager(
+        executionRepository,
+        undefined,
+        config.workerConcurrency,
+        config.schedulerPollMs
+    );
+    const jobs = new JobService(jobRepository, executionRepository);
+    await manager.start();
+    const server = createServer(createApp({ pool, jobs, executions: executionRepository, manager }));
+    server.listen(config.port, () => console.log(`Background Job Server is running on http://localhost:${config.port}`));
 
-app.get('/health', (_req, res) => {
-      res.status(200).json({
-          status: 'ok'
-      });
-});
-
-app.use('/api/jobs', jobsController);
-app.use('/api/logs', logsController);
-
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-    console.log(`Background Job Server is running on http://localhost:${PORT}`);
-});
+    let shuttingDown = false;
+    const shutdown = async (): Promise<void> => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        server.close();
+        await manager.shutdown(config.shutdownGraceMs);
+        await pool.end();
+    };
+    process.once('SIGINT', () => void shutdown());
+    process.once('SIGTERM', () => void shutdown());
+} catch (error: unknown) {
+    console.error(error instanceof Error ? error.message : String(error));
+    await pool.end();
+    process.exitCode = 1;
+}
