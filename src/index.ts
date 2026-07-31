@@ -9,6 +9,7 @@ import { WebhookRepository } from './repositories/WebhookRepository.js';
 import { JobExecutionManager } from './services/JobExecutionManager.js';
 import { JobService } from './services/JobService.js';
 import { WebhookDispatcher } from './services/WebhookDispatcher.js';
+import { createSecurityRuntime } from './security/runtime.js';
 
 const config = loadConfig();
 const pool = createPool(config.databaseUrl, config.dbPoolMax);
@@ -18,17 +19,20 @@ try {
     const jobRepository = new JobRepository(pool);
     const executionRepository = new ExecutionRepository(pool);
     const webhookRepository = new WebhookRepository(pool);
+    const security = createSecurityRuntime(pool, config);
     const manager = new JobExecutionManager(
         executionRepository,
         undefined,
         config.workerConcurrency,
-        config.schedulerPollMs
+        config.schedulerPollMs,
+        security.secrets
     );
     const webhookDispatcher = new WebhookDispatcher(webhookRepository, {
         concurrency: config.webhookConcurrency,
         pollMs: config.webhookPollMs,
         maxAttempts: config.webhookMaxAttempts,
         requestTimeoutMs: config.webhookRequestTimeoutMs,
+        secrets: security.secrets,
         ...(config.webhookSigningKey === undefined ? {} : { signingKey: config.webhookSigningKey })
     });
     const jobs = new JobService(jobRepository, executionRepository);
@@ -44,7 +48,8 @@ try {
         jobs,
         executions: executionRepository,
         manager,
-        webhookDispatcher
+        webhookDispatcher,
+        security
     }));
     server.listen(config.port, () => console.log(`Background Job Server is running on http://localhost:${config.port}`));
 

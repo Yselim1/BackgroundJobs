@@ -1,4 +1,45 @@
 export type ExecutionStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelled' | 'skipped';
+export type SecurityRole = 'viewer' | 'operator' | 'admin';
+
+export interface AuthSession {
+    user: {
+        userId: string;
+        email: string;
+        displayName: string;
+        role: SecurityRole;
+    };
+    authType: 'session' | 'api_token';
+    permissions: string[];
+}
+
+export interface SecurityUser {
+    userId: string;
+    email: string;
+    displayName: string;
+    role: SecurityRole;
+    status: 'active' | 'disabled';
+    lastLoginAt: string | null;
+    createdAt: string;
+}
+
+export interface ManagedSecret {
+    secretId: string;
+    name: string;
+    description: string | null;
+    keyVersion: number;
+    updatedAt: string;
+}
+
+export interface AuditEvent {
+    auditId: string;
+    actorLabel: string;
+    action: string;
+    outcome: 'success' | 'failure';
+    statusCode: number;
+    resourceType: string | null;
+    resourceId: string | null;
+    createdAt: string;
+}
 
 export interface PlatformOverview {
     generatedAt: string;
@@ -40,6 +81,7 @@ export interface ExecutionSummary {
     trigger: 'manual' | 'scheduled';
     status: ExecutionStatus;
     requestedAt: string;
+    requestedBy: { type: 'system' | 'user' | 'api_token'; userId: string | null; label: string };
     startedAt: string | null;
     finishedAt: string | null;
     durationMs: number | null;

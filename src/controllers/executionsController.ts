@@ -3,6 +3,7 @@ import { AppError } from '../errors.js';
 import { ExecutionRepository } from '../repositories/ExecutionRepository.js';
 import { JobExecutionManager } from '../services/JobExecutionManager.js';
 import type { ExecutionStatus, ExecutionTrigger } from '../types/index.js';
+import { requirePermission } from '../security/middleware.js';
 
 const STATUSES = new Set<ExecutionStatus>(['queued', 'running', 'success', 'failed', 'cancelled', 'skipped']);
 const TRIGGERS = new Set<ExecutionTrigger>(['manual', 'scheduled']);
@@ -11,7 +12,7 @@ const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+
 
 export function createExecutionsController(executions: ExecutionRepository, manager: JobExecutionManager): Router {
     const router = Router();
-    router.get('/', route(async (req, res) => {
+    router.get('/', requirePermission('executions:read'), route(async (req, res) => {
         const limit = parseLimit(req.query.limit);
         const status = parseOptionalString(req.query.status, 'status');
         if (status !== undefined && !STATUSES.has(status as ExecutionStatus)) {
@@ -38,7 +39,7 @@ export function createExecutionsController(executions: ExecutionRepository, mana
             ...(cursor === undefined ? {} : { cursor })
         }));
     }));
-    router.get('/:id/events', (req, res, next) => {
+    router.get('/:id/events', requirePermission('executions:read'), (req, res, next) => {
         void streamEvents(executions, req, res).catch(error => {
             if (res.headersSent) {
                 res.write(`event: error\ndata: ${JSON.stringify({ error: 'Event stream failed.' })}\n\n`);
@@ -48,20 +49,20 @@ export function createExecutionsController(executions: ExecutionRepository, mana
             next(error);
         });
     });
-    router.get('/:id/webhooks', route(async (req, res) => {
+    router.get('/:id/webhooks', requirePermission('executions:read'), route(async (req, res) => {
         const executionId = req.params.id as string;
         if (await executions.getSummary(executionId) === undefined) {
             throw new AppError('EXECUTION_NOT_FOUND', `Execution ${executionId} not found.`, 404);
         }
         res.status(200).json(await executions.listWebhookDeliveries(executionId));
     }));
-    router.get('/:id', route(async (req, res) => {
+    router.get('/:id', requirePermission('executions:read'), route(async (req, res) => {
         const execution = await executions.getDetail(req.params.id as string);
         if (execution === undefined) throw new AppError('EXECUTION_NOT_FOUND', `Execution ${req.params.id} not found.`, 404);
         res.status(200).json(execution);
     }));
-    router.post('/:id/cancel', route(async (req, res) => {
-        res.status(200).json(await manager.cancel(req.params.id as string));
+    router.post('/:id/cancel', requirePermission('executions:cancel'), route(async (req, res) => {
+        res.status(200).json(await manager.cancel(req.params.id as string, req.auth));
     }));
     return router;
 }

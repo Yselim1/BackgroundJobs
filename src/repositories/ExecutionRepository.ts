@@ -3,6 +3,8 @@ import type { DatabaseClient, DatabasePool } from '../db/pool.js';
 import { isUniqueViolation, withTransaction } from '../db/pool.js';
 import { AppError } from '../errors.js';
 import type {
+    ActorSummary,
+    AuthenticatedActor,
     ExecutionDetail,
     ExecutionEvent,
     ExecutionListPage,
@@ -34,6 +36,12 @@ interface ExecutionRow {
     error_code: string | null;
     error_message: string | null;
     skip_reason: string | null;
+    requested_by_type: ActorSummary['type'];
+    requested_by_user_id: string | null;
+    requested_by_label: string;
+    cancel_requested_by_type: 'user' | 'api_token' | null;
+    cancel_requested_by_user_id: string | null;
+    cancel_requested_by_label: string | null;
 }
 
 interface EventRow { id: string; execution_id: string; event_type: string; payload: Record<string, unknown>; created_at: Date; }
@@ -101,7 +109,11 @@ export interface ExecutionFilters {
 export class ExecutionRepository {
     constructor(readonly pool: DatabasePool) {}
 
-    async enqueueManual(jobId: string, input: Record<string, unknown> = {}): Promise<ExecutionSummary> {
+    async enqueueManual(
+        jobId: string,
+        input: Record<string, unknown> = {},
+        actor?: AuthenticatedActor
+    ): Promise<ExecutionSummary> {
         try {
             const executionId = await withTransaction(this.pool, async client => {
                 const result = await client.query<{ definition: Job }>(
@@ -110,7 +122,7 @@ export class ExecutionRepository {
                 );
                 const job = result.rows[0]?.definition;
                 if (job === undefined) throw new AppError('JOB_NOT_FOUND', `Job with id ${jobId} not found.`, 404);
-                return insertExecution(client, job, input, 'manual', null, 'queued');
+                return insertExecution(client, job, input, 'manual', null, 'queued', null, actor);
             });
             return (await this.getSummary(executionId))!;
         } catch (error: unknown) {
@@ -314,7 +326,11 @@ export class ExecutionRepository {
         });
     }
 
-    async requestCancellation(executionId: string): Promise<{ summary: ExecutionSummary; shouldAbort: boolean }> {
+    async requestCancellation(
+        executionId: string,
+        actor?: AuthenticatedActor
+    ): Promise<{ summary: ExecutionSummary; shouldAbort: boolean }> {
+        const actorType = actor === undefined ? null : actor.authType === 'session' ? 'user' : 'api_token';
         const shouldAbort = await withTransaction(this.pool, async client => {
             const result = await client.query<ExecutionRow>('SELECT * FROM executions WHERE id = $1 FOR UPDATE', [executionId]);
             const execution = result.rows[0];
@@ -323,28 +339,38 @@ export class ExecutionRepository {
             if (execution.status === 'queued') {
                 const cancelled = await client.query<ExecutionRow>(
                     `UPDATE executions SET status = 'cancelled', cancel_requested_at = clock_timestamp(),
+                        cancel_requested_by_type = $2, cancel_requested_by_user_id = $3,
+                        cancel_requested_by_label = $4,
                         finished_at = clock_timestamp(), updated_at = clock_timestamp()
                      WHERE id = $1 RETURNING *`,
-                    [executionId]
+                    [executionId, actorType, actor?.userId ?? null, actor?.email ?? null]
                 );
                 await client.query(
                     `UPDATE execution_steps SET status = 'cancelled', finished_at = clock_timestamp(), reason = 'Execution cancelled before it started.'
                      WHERE execution_id = $1 AND status = 'pending'`,
                     [executionId]
                 );
-                await appendEvent(client, executionId, 'execution.cancel_requested', { status: 'queued' });
+                await appendEvent(client, executionId, 'execution.cancel_requested', {
+                    status: 'queued', requestedBy: actor?.email ?? 'system'
+                });
                 await appendEvent(client, executionId, 'execution.cancelled', { reason: 'Execution cancelled before it started.' });
                 await enqueueTerminalWebhooks(client, cancelled.rows[0]!);
                 return false;
             }
             if (execution.status === 'running') {
                 await client.query(
-                    `UPDATE executions SET cancel_requested_at = COALESCE(cancel_requested_at, clock_timestamp()), updated_at = clock_timestamp()
+                    `UPDATE executions SET cancel_requested_at = COALESCE(cancel_requested_at, clock_timestamp()),
+                        cancel_requested_by_type = COALESCE(cancel_requested_by_type, $2),
+                        cancel_requested_by_user_id = COALESCE(cancel_requested_by_user_id, $3),
+                        cancel_requested_by_label = COALESCE(cancel_requested_by_label, $4),
+                        updated_at = clock_timestamp()
                      WHERE id = $1`,
-                    [executionId]
+                    [executionId, actorType, actor?.userId ?? null, actor?.email ?? null]
                 );
                 if (execution.cancel_requested_at === null) {
-                    await appendEvent(client, executionId, 'execution.cancel_requested', { status: 'running' });
+                    await appendEvent(client, executionId, 'execution.cancel_requested', {
+                        status: 'running', requestedBy: actor?.email ?? 'system'
+                    });
                 }
                 return true;
             }
@@ -549,15 +575,27 @@ async function insertExecution(
     trigger: ExecutionTrigger,
     scheduledFor: Date | null,
     status: ExecutionStatus,
-    skipReason: string | null = null
+    skipReason: string | null = null,
+    actor?: AuthenticatedActor
 ): Promise<string> {
     const executionId = randomUUID();
     const terminal = status === 'skipped';
     const inserted = await client.query<ExecutionRow>(
-        `INSERT INTO executions(id, job_id, job_definition, input, trigger_type, status, scheduled_for, finished_at, skip_reason)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $8 THEN clock_timestamp() ELSE NULL END, $9)
+        `INSERT INTO executions(
+            id, job_id, job_definition, input, trigger_type, status, scheduled_for,
+            finished_at, skip_reason, requested_by_type, requested_by_user_id, requested_by_label
+         )
+         VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            CASE WHEN $8 THEN clock_timestamp() ELSE NULL END, $9, $10, $11, $12
+         )
          RETURNING *`,
-        [executionId, job.id, job, input, trigger, status, scheduledFor, terminal, skipReason]
+        [
+            executionId, job.id, job, input, trigger, status, scheduledFor, terminal, skipReason,
+            actor === undefined ? 'system' : actor.authType === 'session' ? 'user' : 'api_token',
+            actor?.userId ?? null,
+            actor?.email ?? 'system'
+        ]
     );
     for (const step of [...job.STEPS].sort((a, b) => a.ORDER - b.ORDER)) {
         await client.query(
@@ -568,7 +606,9 @@ async function insertExecution(
     }
     await appendEvent(client, executionId, terminal ? 'execution.skipped' : 'execution.queued', {
         jobId: job.id, trigger, status, scheduledFor: scheduledFor?.toISOString() ?? null,
-        requestedAt: inserted.rows[0]!.requested_at.toISOString(), ...(skipReason === null ? {} : { reason: skipReason })
+        requestedAt: inserted.rows[0]!.requested_at.toISOString(),
+        requestedBy: actor?.email ?? 'system',
+        ...(skipReason === null ? {} : { reason: skipReason })
     });
     if (terminal) await enqueueTerminalWebhooks(client, inserted.rows[0]!);
     return executionId;
@@ -583,9 +623,21 @@ function mapSummary(row: ExecutionRow): ExecutionSummary {
         status: row.status,
         scheduledFor: row.scheduled_for?.toISOString() ?? null,
         requestedAt: row.requested_at.toISOString(),
+        requestedBy: mapActorSummary(
+            row.requested_by_type,
+            row.requested_by_user_id,
+            row.requested_by_label
+        ),
         startedAt: row.started_at?.toISOString() ?? null,
         finishedAt: row.finished_at?.toISOString() ?? null,
         cancelRequestedAt: row.cancel_requested_at?.toISOString() ?? null,
+        cancelRequestedBy: row.cancel_requested_by_type === null
+            ? null
+            : mapActorSummary(
+                row.cancel_requested_by_type,
+                row.cancel_requested_by_user_id,
+                row.cancel_requested_by_label ?? 'unknown'
+            ),
         durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
         error: row.error_message === null ? null : { code: row.error_code, message: row.error_message },
         skipReason: row.skip_reason
@@ -632,12 +684,19 @@ async function enqueueTerminalWebhooks(client: DatabaseClient, row: ExecutionRow
         };
         await client.query(
             `INSERT INTO webhook_deliveries(
-                id, execution_id, event_type, subscription_index, url, payload, status
-             ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'pending')
+                id, execution_id, event_type, subscription_index, url, payload, status, signing_secret_name
+             ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'pending', $7)
              ON CONFLICT (execution_id, event_type, subscription_index) DO NOTHING`,
-            [deliveryId, row.id, eventType, subscriptionIndex, webhook.URL, JSON.stringify(payload)]
+            [
+                deliveryId, row.id, eventType, subscriptionIndex, webhook.URL,
+                JSON.stringify(payload), webhook.SIGNING_SECRET ?? null
+            ]
         );
     }
+}
+
+function mapActorSummary(type: ActorSummary['type'], userId: string | null, label: string): ActorSummary {
+    return { type, userId, label };
 }
 
 function mapAttempt(row: AttemptRow): StepAttemptLog {

@@ -12,6 +12,7 @@ interface WebhookDeliveryRow {
     next_attempt_at: Date;
     response_status: number | null;
     last_error: string | null;
+    signing_secret_name: string | null;
 }
 
 export interface ClaimedWebhookDelivery {
@@ -21,6 +22,7 @@ export interface ClaimedWebhookDelivery {
     url: string;
     payload: Record<string, unknown>;
     attemptCount: number;
+    signingSecretName: string | null;
 }
 
 export class WebhookRepository {
@@ -68,7 +70,8 @@ export class WebhookRepository {
                 eventType: updated.event_type,
                 url: updated.url,
                 payload: updated.payload,
-                attemptCount: updated.attempt_count
+                attemptCount: updated.attempt_count,
+                signingSecretName: updated.signing_secret_name
             };
         });
     }

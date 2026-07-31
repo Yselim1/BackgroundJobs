@@ -3,6 +3,7 @@ import type { Step, HttpMethod, RestApiStepParams, RestApiResponseType, RestApiS
 import { resolveContextTemplates} from '../utils/contextResolver.js';
 import type { ExecutorOptions } from './IStepExecutor.js';
 import { abortError } from '../errors.js';
+import { redactManagedSecretText } from '../security/redaction.js';
 
 const DEFAULT_TIMEOUT_MS = 10000;
 
@@ -76,7 +77,10 @@ export class RestApiExecutor implements IStepExecutor {
                 headers
             );
             
-            console.log(`[RESTAPI] Executing HTTP ${method} request to ${requestUrl}`);
+            const secretContext = isRecord(context.secrets)
+                ? Object.fromEntries(Object.entries(context.secrets).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+                : {};
+            console.log(`[RESTAPI] Executing HTTP ${method} request to ${redactManagedSecretText(requestUrl, secretContext)}`);
 
             const requestInit: RequestInit = {
                   method,

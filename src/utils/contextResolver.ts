@@ -181,6 +181,7 @@ function resolveContextPath(
   if (
       options.allowedStepIds &&
       stepId !== 'input' &&
+      stepId !== 'secrets' &&
       stepId !== 'item' &&
       stepId !== 'index' &&
       !options.allowedStepIds.has(stepId)

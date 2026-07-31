@@ -1,15 +1,37 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
+    AUTH_EXPIRED_EVENT,
     cancelExecution,
+    createSecurityUser,
+    deleteManagedSecret,
     executionEventUrl,
+    getAuditEvents,
+    getCurrentUser,
     getExecution,
     getExecutions,
     getJobs,
+    getManagedSecrets,
     getOverview,
-    runJob
+    getSecurityUsers,
+    login,
+    logout,
+    putManagedSecret,
+    runJob,
+    updateSecurityUser
 } from './api';
 import { formatDuration, formatRelativeTime, titleCase } from './format';
-import type { ExecutionDetail, ExecutionStatus, ExecutionSummary, Job, PlatformOverview } from './types';
+import type {
+    AuditEvent,
+    AuthSession,
+    ExecutionDetail,
+    ExecutionStatus,
+    ExecutionSummary,
+    Job,
+    ManagedSecret,
+    PlatformOverview,
+    SecurityRole,
+    SecurityUser
+} from './types';
 
 const EXECUTION_STATUSES: Array<ExecutionStatus | 'all'> = [
     'all', 'running', 'queued', 'failed', 'success', 'cancelled', 'skipped'
@@ -21,6 +43,27 @@ const SSE_EVENTS = [
 ];
 
 export function App() {
+    const [session, setSession] = useState<AuthSession | null>();
+
+    useEffect(() => {
+        void getCurrentUser()
+            .then(setSession)
+            .catch(() => setSession(null));
+        const expired = () => setSession(null);
+        window.addEventListener(AUTH_EXPIRED_EVENT, expired);
+        return () => window.removeEventListener(AUTH_EXPIRED_EVENT, expired);
+    }, []);
+
+    if (session === undefined) {
+        return <div className="auth-loading">Securing operations console…</div>;
+    }
+    if (session === null) {
+        return <LoginScreen onAuthenticated={setSession} />;
+    }
+    return <Dashboard session={session} onLoggedOut={() => setSession(null)} />;
+}
+
+function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
     const [overview, setOverview] = useState<PlatformOverview>();
     const [jobs, setJobs] = useState<Job[]>([]);
     const [executions, setExecutions] = useState<ExecutionSummary[]>([]);
@@ -30,6 +73,10 @@ export function App() {
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState<string>();
     const [error, setError] = useState<string>();
+    const [securityOpen, setSecurityOpen] = useState(false);
+    const canRun = props.session.permissions.includes('jobs:run');
+    const canCancel = props.session.permissions.includes('executions:cancel');
+    const canAdminister = props.session.user.role === 'admin';
 
     const refresh = useCallback(async (quiet = false) => {
         if (!quiet) setLoading(true);
@@ -67,7 +114,7 @@ export function App() {
 
     useEffect(() => {
         if (selected === undefined || TERMINAL.has(selected.status)) return;
-        const source = new EventSource(executionEventUrl(selected.executionId));
+        const source = new EventSource(executionEventUrl(selected.executionId), { withCredentials: true });
         const update = () => {
             void openExecution(selected.executionId);
             void refresh(true);
@@ -108,6 +155,11 @@ export function App() {
         }
     };
 
+    const handleLogout = async () => {
+        try { await logout(); }
+        finally { props.onLoggedOut(); }
+    };
+
     return (
         <div className="shell">
             <header className="topbar">
@@ -123,9 +175,23 @@ export function App() {
                     <span>System online</span>
                     <span className="updated">Updated {formatRelativeTime(overview?.generatedAt ?? null)}</span>
                 </div>
-                <button className="button button-quiet" onClick={() => void refresh()} disabled={loading}>
-                    {loading ? 'Refreshing…' : 'Refresh'}
-                </button>
+                <div className="account-actions">
+                    <div className="account-copy">
+                        <strong>{props.session.user.displayName}</strong>
+                        <small>{props.session.user.role} · {props.session.user.email}</small>
+                    </div>
+                    {canAdminister && (
+                        <button className="button button-quiet" onClick={() => setSecurityOpen(true)}>
+                            Security
+                        </button>
+                    )}
+                    <button className="button button-quiet" onClick={() => void refresh()} disabled={loading}>
+                        {loading ? 'Refreshing…' : 'Refresh'}
+                    </button>
+                    <button className="button button-quiet" onClick={() => void handleLogout()}>
+                        Sign out
+                    </button>
+                </div>
             </header>
 
             <main>
@@ -227,7 +293,8 @@ export function App() {
                                     <button
                                         className="button button-run"
                                         onClick={() => void handleRun(job.id)}
-                                        disabled={busy === 'run:' + job.id}
+                                        disabled={!canRun || busy === 'run:' + job.id}
+                                        title={canRun ? 'Queue this job' : 'Operator or admin role required'}
                                     >
                                         {busy === 'run:' + job.id ? 'Queuing…' : 'Run'}
                                     </button>
@@ -244,8 +311,230 @@ export function App() {
                 busy={busy === 'cancel:' + selected?.executionId}
                 onClose={() => setSelected(undefined)}
                 onCancel={handleCancel}
+                canCancel={canCancel}
             />
+            {canAdminister && (
+                <SecurityPanel open={securityOpen} onClose={() => setSecurityOpen(false)} />
+            )}
         </div>
+    );
+}
+
+function LoginScreen(props: { onAuthenticated: (session: AuthSession) => void }) {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<string>();
+
+    const submit = async (event: FormEvent) => {
+        event.preventDefault();
+        setBusy(true);
+        try {
+            props.onAuthenticated(await login(email, password));
+        } catch (caught) {
+            setError(caught instanceof Error ? caught.message : String(caught));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    return (
+        <main className="auth-shell">
+            <section className="auth-card">
+                <div className="brand auth-brand">
+                    <span className="brand-mark" aria-hidden="true">W</span>
+                    <span><strong>Workline</strong><small>Secure operations</small></span>
+                </div>
+                <p className="eyebrow">Authorized access</p>
+                <h1>Sign in to the operations desk.</h1>
+                <p className="auth-intro">Sessions are stored server-side and protected by an HttpOnly cookie.</p>
+                {error !== undefined && <div className="error-banner" role="alert">{error}</div>}
+                <form className="auth-form" onSubmit={event => void submit(event)}>
+                    <label>
+                        <span>Email</span>
+                        <input type="email" autoComplete="username" value={email} onChange={event => setEmail(event.target.value)} required />
+                    </label>
+                    <label>
+                        <span>Password</span>
+                        <input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required />
+                    </label>
+                    <button className="button button-primary" disabled={busy}>
+                        {busy ? 'Signing in…' : 'Sign in'}
+                    </button>
+                </form>
+                <small className="bootstrap-note">First installation? Create the initial administrator with <code>npm run auth:bootstrap</code>.</small>
+            </section>
+        </main>
+    );
+}
+
+function SecurityPanel(props: { open: boolean; onClose: () => void }) {
+    const [users, setUsers] = useState<SecurityUser[]>([]);
+    const [secrets, setSecrets] = useState<ManagedSecret[]>([]);
+    const [audit, setAudit] = useState<AuditEvent[]>([]);
+    const [secretsConfigured, setSecretsConfigured] = useState(false);
+    const [error, setError] = useState<string>();
+    const [busy, setBusy] = useState<string>();
+    const [newUser, setNewUser] = useState({
+        email: '', displayName: '', password: '', role: 'viewer' as SecurityRole
+    });
+    const [newSecret, setNewSecret] = useState({ name: '', value: '', description: '' });
+
+    const refresh = useCallback(async () => {
+        try {
+            const [nextUsers, nextSecrets, nextAudit] = await Promise.all([
+                getSecurityUsers(), getManagedSecrets(), getAuditEvents()
+            ]);
+            setUsers(nextUsers);
+            setSecrets(nextSecrets.items);
+            setSecretsConfigured(nextSecrets.configured);
+            setAudit(nextAudit);
+            setError(undefined);
+        } catch (caught) {
+            setError(caught instanceof Error ? caught.message : String(caught));
+        }
+    }, []);
+
+    useEffect(() => {
+        if (props.open) void refresh();
+    }, [props.open, refresh]);
+
+    const submitUser = async (event: FormEvent) => {
+        event.preventDefault();
+        setBusy('create-user');
+        try {
+            await createSecurityUser(newUser);
+            setNewUser({ email: '', displayName: '', password: '', role: 'viewer' });
+            await refresh();
+        } catch (caught) {
+            setError(caught instanceof Error ? caught.message : String(caught));
+        } finally {
+            setBusy(undefined);
+        }
+    };
+
+    const changeUser = async (
+        user: SecurityUser,
+        update: { role?: SecurityRole; status?: 'active' | 'disabled' }
+    ) => {
+        setBusy('user:' + user.userId);
+        try {
+            await updateSecurityUser(user.userId, update);
+            await refresh();
+        } catch (caught) {
+            setError(caught instanceof Error ? caught.message : String(caught));
+        } finally {
+            setBusy(undefined);
+        }
+    };
+
+    const submitSecret = async (event: FormEvent) => {
+        event.preventDefault();
+        setBusy('create-secret');
+        try {
+            await putManagedSecret(newSecret.name, newSecret.value, newSecret.description);
+            setNewSecret({ name: '', value: '', description: '' });
+            await refresh();
+        } catch (caught) {
+            setError(caught instanceof Error ? caught.message : String(caught));
+        } finally {
+            setBusy(undefined);
+        }
+    };
+
+    const removeSecret = async (secret: ManagedSecret) => {
+        if (!window.confirm('Delete managed secret ' + secret.name + '? Existing jobs may fail until it is restored.')) return;
+        setBusy('secret:' + secret.secretId);
+        try {
+            await deleteManagedSecret(secret.name);
+            await refresh();
+        } catch (caught) {
+            setError(caught instanceof Error ? caught.message : String(caught));
+        } finally {
+            setBusy(undefined);
+        }
+    };
+
+    return (
+        <>
+            <button className={'drawer-backdrop ' + (props.open ? 'visible' : '')} onClick={props.onClose} aria-label="Close security console" />
+            <aside className={'security-panel ' + (props.open ? 'open' : '')} aria-hidden={!props.open}>
+                <div className="drawer-head">
+                    <div><p className="eyebrow">Administration</p><h2>Security console</h2></div>
+                    <button className="close" onClick={props.onClose} aria-label="Close">×</button>
+                </div>
+                {error !== undefined && <div className="error-banner" role="alert">{error}</div>}
+
+                <section className="security-section">
+                    <div className="section-title"><h3>Users</h3><span>{users.length} identities</span></div>
+                    <form className="security-form user-form" onSubmit={event => void submitUser(event)}>
+                        <input placeholder="Display name" value={newUser.displayName} onChange={event => setNewUser({ ...newUser, displayName: event.target.value })} required />
+                        <input type="email" placeholder="Email" value={newUser.email} onChange={event => setNewUser({ ...newUser, email: event.target.value })} required />
+                        <input type="password" minLength={12} placeholder="Temporary password" value={newUser.password} onChange={event => setNewUser({ ...newUser, password: event.target.value })} required />
+                        <select value={newUser.role} onChange={event => setNewUser({ ...newUser, role: event.target.value as SecurityRole })}>
+                            <option value="viewer">Viewer</option><option value="operator">Operator</option><option value="admin">Admin</option>
+                        </select>
+                        <button className="button button-primary" disabled={busy === 'create-user'}>Create user</button>
+                    </form>
+                    <div className="security-list">
+                        {users.map(user => (
+                            <article key={user.userId}>
+                                <div><strong>{user.displayName}</strong><small>{user.email} · {user.status}</small></div>
+                                <select
+                                    value={user.role}
+                                    disabled={busy === 'user:' + user.userId}
+                                    onChange={event => void changeUser(user, { role: event.target.value as SecurityRole })}
+                                >
+                                    <option value="viewer">Viewer</option><option value="operator">Operator</option><option value="admin">Admin</option>
+                                </select>
+                                <button
+                                    className="button button-quiet"
+                                    disabled={busy === 'user:' + user.userId}
+                                    onClick={() => void changeUser(user, { status: user.status === 'active' ? 'disabled' : 'active' })}
+                                >
+                                    {user.status === 'active' ? 'Disable' : 'Enable'}
+                                </button>
+                            </article>
+                        ))}
+                    </div>
+                </section>
+
+                <section className="security-section">
+                    <div className="section-title">
+                        <h3>Managed secrets</h3>
+                        <span>{secretsConfigured ? 'Encryption configured' : 'SECRETS_MASTER_KEY required'}</span>
+                    </div>
+                    <form className="security-form secret-form" onSubmit={event => void submitSecret(event)}>
+                        <input placeholder="SECRET_NAME" value={newSecret.name} onChange={event => setNewSecret({ ...newSecret, name: event.target.value.toUpperCase() })} required />
+                        <input type="password" placeholder="Secret value" value={newSecret.value} onChange={event => setNewSecret({ ...newSecret, value: event.target.value })} required />
+                        <input placeholder="Description (optional)" value={newSecret.description} onChange={event => setNewSecret({ ...newSecret, description: event.target.value })} />
+                        <button className="button button-primary" disabled={!secretsConfigured || busy === 'create-secret'}>Store or rotate</button>
+                    </form>
+                    <div className="security-list">
+                        {secrets.map(secret => (
+                            <article key={secret.secretId}>
+                                <div><strong>{secret.name}</strong><small>{secret.description ?? 'No description'} · version {secret.keyVersion}</small></div>
+                                <span>{formatRelativeTime(secret.updatedAt)}</span>
+                                <button className="button button-quiet" onClick={() => void removeSecret(secret)}>Delete</button>
+                            </article>
+                        ))}
+                    </div>
+                </section>
+
+                <section className="security-section">
+                    <div className="section-title"><h3>Audit trail</h3><span>Append-only</span></div>
+                    <div className="audit-list">
+                        {audit.map(event => (
+                            <article key={event.auditId}>
+                                <StatusPill status={event.outcome} />
+                                <div><strong>{event.action}</strong><small>{event.actorLabel} · {event.resourceId ?? event.resourceType ?? 'system'}</small></div>
+                                <time>{formatRelativeTime(event.createdAt)}</time>
+                            </article>
+                        ))}
+                    </div>
+                </section>
+            </aside>
+        </>
     );
 }
 
@@ -266,6 +555,7 @@ function StatusPill({ status }: { status: string }) {
 function ExecutionDrawer(props: {
     execution?: ExecutionDetail;
     busy: boolean;
+    canCancel: boolean;
     onClose: () => void;
     onCancel: (executionId: string) => Promise<void>;
 }) {
@@ -294,7 +584,7 @@ function ExecutionDrawer(props: {
                             <span>{formatDuration(execution.durationMs)}</span>
                             <span>{formatRelativeTime(execution.requestedAt)}</span>
                         </div>
-                        {(execution.status === 'queued' || execution.status === 'running') && (
+                        {props.canCancel && (execution.status === 'queued' || execution.status === 'running') && (
                             <button
                                 className="button button-cancel"
                                 onClick={() => void props.onCancel(execution.executionId)}

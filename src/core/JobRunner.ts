@@ -13,6 +13,7 @@ import { assertValidJobDefinition } from '../utils/jobValidator.js';
 import { normalizeJsonOutput } from '../utils/jsonOutput.js';
 import { ConcurrencyLimiter } from '../utils/ConcurrencyLimiter.js';
 import { evaluateWorkflowCondition, resolveFanOutItems } from '../utils/workflowExpressions.js';
+import { redactManagedSecretError, redactManagedSecrets } from '../security/redaction.js';
 
 interface ResolvedRetryPolicy { MAX_ATTEMPTS: number; DELAY_MS: number; BACKOFF: RetryBackoff; }
 interface StepExecutionResult { stepId: string; output: unknown; }
@@ -38,6 +39,7 @@ export interface JobRunOptions {
     signal?: AbortSignal;
     observer?: ExecutionObserver;
     input?: Record<string, unknown>;
+    secrets?: Record<string, string>;
 }
 
 export class JobRunner {
@@ -59,7 +61,10 @@ export class JobRunner {
             const failurePolicy = executableJob.FAILURE_POLICY ?? 'fail_fast';
             const maxConcurrency = executableJob.MAX_CONCURRENCY ?? 10;
             const limiter = new ConcurrencyLimiter(maxConcurrency);
-            const context: Record<string, unknown> = { input: options.input ?? {} };
+            const context: Record<string, unknown> = {
+                input: options.input ?? {},
+                secrets: options.secrets ?? {}
+            };
             let representativeFailure: Error | undefined;
 
             while (pendingSteps.size > 0) {
@@ -307,7 +312,10 @@ export class JobRunner {
             try {
                 const rawOutput = await limiter.run(signal, () => executor.execute(step, context, { signal }));
                 throwIfAborted(signal);
-                const output = normalizeJsonOutput(rawOutput);
+                const output = redactManagedSecrets(
+                    normalizeJsonOutput(rawOutput),
+                    contextSecrets(context)
+                );
                 const finishedAt = new Date();
                 const attempt: StepAttemptLog = {
                     attempt: attemptNumber,
@@ -321,7 +329,9 @@ export class JobRunner {
                 await observer.attemptFinished(step, attempt, itemIndex);
                 return output;
             } catch (error: unknown) {
-                const resolved = signal.aborted ? abortError(signal) : toError(error);
+                const resolved = signal.aborted
+                    ? abortError(signal)
+                    : redactManagedSecretError(toError(error), contextSecrets(context));
                 const finishedAt = new Date();
                 const cancelled = resolved instanceof ExecutionAbortError;
                 const attempt: StepAttemptLog = {
@@ -410,6 +420,15 @@ export class JobRunner {
             pending.delete(stepId);
         }
     }
+}
+
+function contextSecrets(context: Record<string, unknown>): Record<string, string> {
+    const value = context.secrets;
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+    );
 }
 
 function resolveRetry(defaultPolicy?: RetryPolicy, stepPolicy?: RetryPolicy): ResolvedRetryPolicy {

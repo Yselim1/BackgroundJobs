@@ -2,10 +2,12 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import request from 'supertest';
+import type { Express } from 'express';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../../src/app.js';
 import { getSchemaVersions, migrate } from '../../src/db/migrations.js';
 import { createPool, type DatabasePool } from '../../src/db/pool.js';
+import { loadConfig } from '../../src/config.js';
 import { ExecutionRepository } from '../../src/repositories/ExecutionRepository.js';
 import { JobRepository } from '../../src/repositories/JobRepository.js';
 import { WebhookRepository } from '../../src/repositories/WebhookRepository.js';
@@ -13,11 +15,17 @@ import { JobExecutionManager } from '../../src/services/JobExecutionManager.js';
 import { JobService } from '../../src/services/JobService.js';
 import { WebhookDispatcher, createWebhookSignature } from '../../src/services/WebhookDispatcher.js';
 import type { Job } from '../../src/types/index.js';
+import { createSecurityRuntime, type SecurityRuntime } from '../../src/security/runtime.js';
 
 let container: StartedPostgreSqlContainer | undefined;
 let pool: DatabasePool;
 let jobs: JobRepository;
 let executions: ExecutionRepository;
+let security: SecurityRuntime;
+let adminToken: string;
+let adminUserId: string;
+const ADMIN_EMAIL = 'admin@integration.test';
+const ADMIN_PASSWORD = 'integration-admin-password-123';
 
 beforeAll(async () => {
     const configuredUrl = process.env.TEST_DATABASE_URL;
@@ -28,6 +36,21 @@ beforeAll(async () => {
     await migrate(pool);
     jobs = new JobRepository(pool);
     executions = new ExecutionRepository(pool);
+    security = createSecurityRuntime(pool, loadConfig({
+        NODE_ENV: 'test',
+        AUTH_COOKIE_SECURE: 'false',
+        SECRETS_MASTER_KEY: Buffer.alloc(32, 7).toString('base64')
+    }));
+    const admin = await security.auth.bootstrapAdmin(ADMIN_EMAIL, 'Integration Admin', ADMIN_PASSWORD);
+    adminUserId = admin.userId;
+    adminToken = (await security.auth.createApiToken({
+        userId: admin.userId,
+        email: admin.email,
+        displayName: admin.displayName,
+        role: admin.role,
+        authType: 'session',
+        credentialId: 'integration-bootstrap'
+    }, { name: 'integration-suite' })).token;
 });
 
 beforeEach(async () => {
@@ -158,10 +181,10 @@ describe('HTTP execution API', () => {
         const queued = await executions.enqueueManual(definition.id);
         const manager = new JobExecutionManager(executions, undefined, 1, 50);
         const service = new JobService(jobs, executions);
-        const app = createApp({ pool, jobs: service, executions, manager });
+        const app = createApp({ pool, jobs: service, executions, manager, security });
         await manager.start();
         await waitFor(async () => (await executions.getSummary(queued.executionId))?.status === 'running');
-        await request(app).post(`/api/executions/${queued.executionId}/cancel`).expect(200);
+        await authenticatedRequest(app).post(`/api/executions/${queued.executionId}/cancel`).expect(200);
         await waitFor(async () => (await executions.getSummary(queued.executionId))?.status === 'cancelled');
         expect((await executions.getDetail(queued.executionId))?.stepResults.only?.status).toBe('cancelled');
         await manager.shutdown(1000);
@@ -202,46 +225,46 @@ describe('HTTP execution API', () => {
     it('queues inactive jobs, supports cancellation, pagination, and legacy aliases', async () => {
         const manager = new JobExecutionManager(executions, undefined, 1, 1000);
         const service = new JobService(jobs, executions);
-        const app = createApp({ pool, jobs: service, executions, manager });
-        await request(app).post('/api/jobs').send(job('api-job', 'inactive')).expect(201)
+        const app = createApp({ pool, jobs: service, executions, manager, security });
+        await authenticatedRequest(app).post('/api/jobs').send(job('api-job', 'inactive')).expect(201)
             .expect(response => expect(response.body.next_run).toBeNull());
-        const run = await request(app).post('/api/jobs/api-job/run').expect(202)
+        const run = await authenticatedRequest(app).post('/api/jobs/api-job/run').expect(202)
             .expect('Location', /\/api\/executions\//);
         expect(run.body.executionId).toBe(run.body.logId);
         expect(run.body.status).toBe('queued');
-        await request(app).get(`/api/executions/${run.body.executionId}`).expect(200)
+        await authenticatedRequest(app).get(`/api/executions/${run.body.executionId}`).expect(200)
             .expect(response => expect(response.body.stepResults.only.status).toBe('pending'));
-        await request(app).post(`/api/executions/${run.body.executionId}/cancel`).expect(200)
+        await authenticatedRequest(app).post(`/api/executions/${run.body.executionId}/cancel`).expect(200)
             .expect(response => expect(response.body.status).toBe('cancelled'));
-        await request(app).post(`/api/executions/${run.body.executionId}/cancel`).expect(200);
-        await request(app).get(`/api/logs/${run.body.executionId}`).expect(200)
+        await authenticatedRequest(app).post(`/api/executions/${run.body.executionId}/cancel`).expect(200);
+        await authenticatedRequest(app).get(`/api/logs/${run.body.executionId}`).expect(200)
             .expect(response => {
                 expect(response.body.logId).toBe(run.body.executionId);
                 expect(response.body).toHaveProperty('startTime');
                 expect(response.body).toHaveProperty('stepResults');
             });
-        const list = await request(app).get('/api/executions?status=cancelled&limit=1').expect(200);
+        const list = await authenticatedRequest(app).get('/api/executions?status=cancelled&limit=1').expect(200);
         expect(list.body.items).toHaveLength(1);
-        await request(app).get('/api/logs').expect(200).expect(response => expect(Array.isArray(response.body)).toBe(true));
-        await request(app).get('/health/ready').expect(503);
+        await authenticatedRequest(app).get('/api/logs').expect(200).expect(response => expect(Array.isArray(response.body)).toBe(true));
+        await authenticatedRequest(app).get('/health/ready').expect(503);
     });
 
     it('rejects read-only schedule fields and terminal-state cancellation', async () => {
         const manager = new JobExecutionManager(executions, undefined, 1, 1000);
         const service = new JobService(jobs, executions);
-        const app = createApp({ pool, jobs: service, executions, manager });
-        await request(app).post('/api/jobs').send({ ...job('invalid'), last_run: 'client-value' }).expect(422);
+        const app = createApp({ pool, jobs: service, executions, manager, security });
+        await authenticatedRequest(app).post('/api/jobs').send({ ...job('invalid'), last_run: 'client-value' }).expect(422);
         await jobs.create(job('terminal', 'inactive'));
         const queued = await executions.enqueueManual('terminal');
         await pool.query(`UPDATE executions SET status = 'success', finished_at = clock_timestamp() WHERE id = $1`, [queued.executionId]);
-        await request(app).post(`/api/executions/${queued.executionId}/cancel`).expect(409)
+        await authenticatedRequest(app).post(`/api/executions/${queued.executionId}/cancel`).expect(409)
             .expect(response => expect(response.body.code).toBe('EXECUTION_NOT_CANCELLABLE'));
     });
 
     it('persists runtime input, exposes filtered history, and replays durable SSE events', async () => {
         const manager = new JobExecutionManager(executions, undefined, 1, 25);
         const service = new JobService(jobs, executions);
-        const app = createApp({ pool, jobs: service, executions, manager });
+        const app = createApp({ pool, jobs: service, executions, manager, security });
         const definition = job('input-events', 'inactive');
         definition.STEPS[0] = {
             ORDER: 1,
@@ -250,18 +273,18 @@ describe('HTTP execution API', () => {
             TYPE: 'SCRIPT',
             STEP_PARAMS: { CODE: 'context => ({ greeting: context.input.greeting })' }
         };
-        await request(app).post('/api/jobs').send(definition).expect(201);
-        await request(app).post('/api/jobs/input-events/run').send({ input: [] }).expect(422)
+        await authenticatedRequest(app).post('/api/jobs').send(definition).expect(201);
+        await authenticatedRequest(app).post('/api/jobs/input-events/run').send({ input: [] }).expect(422)
             .expect(response => expect(response.body.code).toBe('INVALID_EXECUTION_INPUT'));
-        await request(app).post('/api/jobs/input-events/run').send({ unexpected: true }).expect(422)
+        await authenticatedRequest(app).post('/api/jobs/input-events/run').send({ unexpected: true }).expect(422)
             .expect(response => expect(response.body.code).toBe('INVALID_RUN_REQUEST'));
         await manager.start();
         try {
-            const run = await request(app).post('/api/jobs/input-events/run')
+            const run = await authenticatedRequest(app).post('/api/jobs/input-events/run')
                 .send({ input: { greeting: 'hello' } })
                 .expect(202);
             await waitFor(async () => (await executions.getSummary(run.body.executionId as string))?.status === 'success');
-            await request(app).get(`/api/executions/${run.body.executionId}`).expect(200)
+            await authenticatedRequest(app).get(`/api/executions/${run.body.executionId}`).expect(200)
                 .expect(response => {
                     expect(response.body.input).toEqual({ greeting: 'hello' });
                     expect(response.body.stepResults.only.output).toEqual({ greeting: 'hello' });
@@ -269,13 +292,13 @@ describe('HTTP execution API', () => {
             const requestedAt = Date.parse(run.body.requestedAt as string);
             const before = new Date(requestedAt - 1_000).toISOString();
             const after = new Date(requestedAt + 1_000).toISOString();
-            await request(app)
+            await authenticatedRequest(app)
                 .get(`/api/executions?jobId=input-events&trigger=manual&status=success&from=${encodeURIComponent(before)}&to=${encodeURIComponent(after)}`)
                 .expect(200)
                 .expect(response => expect(response.body.items).toHaveLength(1));
-            await request(app).get('/api/executions?trigger=other').expect(400)
+            await authenticatedRequest(app).get('/api/executions?trigger=other').expect(400)
                 .expect(response => expect(response.body.code).toBe('INVALID_TRIGGER'));
-            const stream = await request(app)
+            const stream = await authenticatedRequest(app)
                 .get(`/api/executions/${run.body.executionId}/events`)
                 .set('Last-Event-ID', '0')
                 .expect(200)
@@ -284,7 +307,7 @@ describe('HTTP execution API', () => {
             expect(stream.text).toContain('event: step.success');
             expect(stream.text).toContain('event: execution.success');
             const firstEvent = (await executions.listEvents(run.body.executionId as string, 0n, 1))[0]!;
-            const resumed = await request(app)
+            const resumed = await authenticatedRequest(app)
                 .get(`/api/executions/${run.body.executionId}/events`)
                 .set('Last-Event-ID', firstEvent.eventId)
                 .expect(200);
@@ -296,6 +319,12 @@ describe('HTTP execution API', () => {
     });
 
     it('delivers terminal webhooks from the durable outbox and retries failures', async () => {
+        await security.secrets.put(
+            'WEBHOOK_TEST_KEY',
+            'test-signing-key',
+            'Integration webhook signing key',
+            adminUserId
+        );
         const received: Array<{ body: string; headers: Record<string, string | string[] | undefined> }> = [];
         const webhookServer = createServer((req, res) => {
             const chunks: Buffer[] = [];
@@ -315,7 +344,11 @@ describe('HTTP execution API', () => {
         const port = (webhookServer.address() as AddressInfo).port;
         const definition = {
             ...job('webhook-job', 'inactive'),
-            WEBHOOKS: [{ URL: `http://127.0.0.1:${port}/events`, EVENTS: ['success' as const] }]
+            WEBHOOKS: [{
+                URL: `http://127.0.0.1:${port}/events`,
+                EVENTS: ['success' as const],
+                SIGNING_SECRET: 'WEBHOOK_TEST_KEY'
+            }]
         };
         await jobs.create(definition);
         const queued = await executions.enqueueManual(definition.id, { trace: 'abc' });
@@ -326,7 +359,7 @@ describe('HTTP execution API', () => {
             pollMs: 20,
             maxAttempts: 3,
             requestTimeoutMs: 1_000,
-            signingKey: 'test-signing-key'
+            secrets: security.secrets
         });
         try {
             await manager.start();
@@ -346,7 +379,7 @@ describe('HTTP execution API', () => {
             expect(last.headers['x-backgroundjobs-signature']).toBe(
                 createWebhookSignature('test-signing-key', timestamp, last.body)
             );
-            await request(createApp({ pool, jobs: new JobService(jobs, executions), executions, manager, webhookDispatcher: dispatcher }))
+            await authenticatedRequest(createApp({ pool, jobs: new JobService(jobs, executions), executions, manager, webhookDispatcher: dispatcher, security }))
                 .get(`/api/executions/${queued.executionId}/webhooks`)
                 .expect(200)
                 .expect(response => expect(response.body[0].status).toBe('success'));
@@ -391,7 +424,7 @@ describe('HTTP execution API', () => {
             runOptional: false
         });
         const manager = new JobExecutionManager(executions, undefined, 1, 25);
-        const app = createApp({ pool, jobs: new JobService(jobs, executions), executions, manager });
+        const app = createApp({ pool, jobs: new JobService(jobs, executions), executions, manager, security });
         try {
             await manager.start();
             await waitFor(async () => (await executions.getSummary(queued.executionId))?.status === 'success');
@@ -405,24 +438,246 @@ describe('HTTP execution API', () => {
             expect(detail?.stepResults.optional?.status).toBe('skipped');
             expect(detail?.stepResults.after?.status).toBe('success');
 
-            await request(app).get('/api/jobs/platform-workflow/plan').expect(200)
+            await authenticatedRequest(app).get('/api/jobs/platform-workflow/plan').expect(200)
                 .expect(response => {
                     const steps = response.body.levels.flatMap((level: { steps: unknown[] }) => level.steps);
                     expect(steps[0].foreach).toEqual({ ITEMS: 'input.items', MAX_CONCURRENCY: 4 });
                     expect(steps[1].when).toEqual({ PATH: 'input.runOptional' });
                 });
-            await request(app).get('/api/platform/overview').expect(200)
+            await authenticatedRequest(app).get('/api/platform/overview').expect(200)
                 .expect(response => {
                     expect(response.body.jobs.total).toBe(1);
                     expect(response.body.executions.success24h).toBe(1);
                 });
-            await request(app).get('/api/platform/executors').expect(200)
+            await authenticatedRequest(app).get('/api/platform/executors').expect(200)
                 .expect(response => expect(response.body.items).toEqual(
                     expect.arrayContaining(['RESTAPI', 'SCRIPT', 'COMMAND', 'PYTHON'])
                 ));
         } finally {
             await manager.shutdown(1_000);
         }
+    });
+});
+
+describe('Security and authentication lifecycle', () => {
+    it('defaults API access to denied, enforces origin policy, and protects cookie mutations with CSRF', async () => {
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000, security.secrets);
+        const app = createApp({
+            pool,
+            jobs: new JobService(jobs, executions),
+            executions,
+            manager,
+            security
+        });
+
+        await request(app).get('/api/jobs').expect(401)
+            .expect('X-Content-Type-Options', 'nosniff')
+            .expect(response => expect(response.body.code).toBe('AUTHENTICATION_REQUIRED'));
+        await request(app).get('/api/jobs').set('Origin', 'https://evil.example').expect(403)
+            .expect(response => expect(response.body.code).toBe('ORIGIN_NOT_ALLOWED'));
+        await request(app).options('/api/jobs')
+            .set('Origin', 'http://localhost:5173')
+            .expect(204)
+            .expect('Access-Control-Allow-Credentials', 'true');
+
+        await request(app).post('/api/auth/login')
+            .send({ email: ADMIN_EMAIL, password: 'wrong-password' })
+            .expect(401)
+            .expect(response => expect(response.body.code).toBe('INVALID_CREDENTIALS'));
+
+        const browser = request.agent(app);
+        const loginResponse = await browser.post('/api/auth/login')
+            .send({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD })
+            .expect(200);
+        const cookies = loginResponse.headers['set-cookie'] as unknown as string[];
+        expect(cookies.join(';')).toContain('HttpOnly');
+        expect(cookies.join(';')).toContain('SameSite=Strict');
+        const csrfToken = loginResponse.body.csrfToken as string;
+
+        await browser.post('/api/jobs').send(job('csrf-denied', 'inactive')).expect(403)
+            .expect(response => expect(response.body.code).toBe('CSRF_TOKEN_INVALID'));
+        await browser.post('/api/jobs')
+            .set('X-CSRF-Token', csrfToken)
+            .send(job('csrf-allowed', 'inactive'))
+            .expect(201);
+        await browser.post('/api/auth/logout').set('X-CSRF-Token', csrfToken).expect(204);
+        await browser.get('/api/auth/me').expect(401);
+    });
+
+    it('enforces viewer/operator/admin permissions and persists execution actors', async () => {
+        const suffix = Date.now().toString();
+        const viewer = await security.auth.createUser({
+            email: 'viewer-' + suffix + '@integration.test',
+            displayName: 'Viewer',
+            password: 'viewer-password-12345',
+            role: 'viewer'
+        });
+        const operator = await security.auth.createUser({
+            email: 'operator-' + suffix + '@integration.test',
+            displayName: 'Operator',
+            password: 'operator-password-12345',
+            role: 'operator'
+        });
+        const viewerToken = (await security.auth.createApiToken({
+            userId: viewer.userId,
+            email: viewer.email,
+            displayName: viewer.displayName,
+            role: viewer.role,
+            authType: 'session',
+            credentialId: 'test-viewer'
+        }, { name: 'viewer-token' })).token;
+        const operatorToken = (await security.auth.createApiToken({
+            userId: operator.userId,
+            email: operator.email,
+            displayName: operator.displayName,
+            role: operator.role,
+            authType: 'session',
+            credentialId: 'test-operator'
+        }, { name: 'operator-token' })).token;
+        await jobs.create(job('rbac-job', 'inactive'));
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000, security.secrets);
+        const app = createApp({
+            pool,
+            jobs: new JobService(jobs, executions),
+            executions,
+            manager,
+            security
+        });
+        const viewerApi = request.agent(app).set('Authorization', 'Bearer ' + viewerToken);
+        const operatorApi = request.agent(app).set('Authorization', 'Bearer ' + operatorToken);
+
+        await viewerApi.get('/api/jobs').expect(200);
+        await viewerApi.post('/api/jobs/rbac-job/run').expect(403);
+        await operatorApi.post('/api/jobs').send(job('operator-cannot-write')).expect(403);
+        const run = await operatorApi.post('/api/jobs/rbac-job/run').expect(202);
+        expect(run.body.requestedAt).toBeTypeOf('string');
+        const summary = await executions.getSummary(run.body.executionId as string);
+        expect(summary?.requestedBy).toEqual({
+            type: 'api_token',
+            userId: operator.userId,
+            label: operator.email
+        });
+        await operatorApi.post('/api/executions/' + run.body.executionId + '/cancel').expect(200);
+        expect((await executions.getSummary(run.body.executionId as string))?.cancelRequestedBy?.label).toBe(operator.email);
+        await authenticatedRequest(app).patch('/api/security/users/' + viewer.userId)
+            .send({ status: 'disabled' })
+            .expect(200);
+        await viewerApi.get('/api/jobs').expect(401);
+        await authenticatedRequest(app).patch('/api/security/users/' + adminUserId)
+            .send({ role: 'viewer' })
+            .expect(409)
+            .expect(response => expect(response.body.code).toBe('LAST_ADMIN_REQUIRED'));
+    });
+
+    it('temporarily locks an identity after repeated invalid passwords without revealing account state', async () => {
+        const suffix = Date.now().toString();
+        const email = 'lockout-' + suffix + '@integration.test';
+        await security.auth.createUser({
+            email,
+            displayName: 'Lockout Test',
+            password: 'lockout-correct-password-123',
+            role: 'viewer'
+        });
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000, security.secrets);
+        const app = createApp({
+            pool,
+            jobs: new JobService(jobs, executions),
+            executions,
+            manager,
+            security
+        });
+        for (let attempt = 0; attempt < 5; attempt++) {
+            await request(app).post('/api/auth/login')
+                .send({ email, password: 'wrong-password-value' })
+                .expect(401)
+                .expect(response => expect(response.body).toEqual({
+                    error: 'Email or password is incorrect.',
+                    code: 'INVALID_CREDENTIALS'
+                }));
+        }
+        await request(app).post('/api/auth/login')
+            .send({ email, password: 'lockout-correct-password-123' })
+            .expect(401)
+            .expect(response => expect(response.body.code).toBe('INVALID_CREDENTIALS'));
+    });
+
+    it('encrypts managed secrets at rest and injects only referenced values at execution time', async () => {
+        const secretValue = 'managed-secret-value-' + Date.now();
+        const manager = new JobExecutionManager(executions, undefined, 1, 25, security.secrets);
+        const app = createApp({
+            pool,
+            jobs: new JobService(jobs, executions),
+            executions,
+            manager,
+            security
+        });
+        const api = authenticatedRequest(app);
+        await api.put('/api/security/secrets/API_TOKEN')
+            .send({ value: secretValue, description: 'Integration API token' })
+            .expect(200);
+        await api.get('/api/security/secrets').expect(200).expect(response => {
+            expect(JSON.stringify(response.body)).not.toContain(secretValue);
+            expect(response.body.items[0].name).toBe('API_TOKEN');
+        });
+        const stored = await pool.query<{ encrypted_value: Buffer }>(
+            'SELECT encrypted_value FROM managed_secrets WHERE name = $1',
+            ['API_TOKEN']
+        );
+        expect(stored.rows[0]?.encrypted_value.toString('utf8')).not.toContain(secretValue);
+
+        let receivedSecret: string | undefined;
+        const target = createServer((req, res) => {
+            receivedSecret = req.headers['x-managed-secret'] as string | undefined;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ accepted: true }));
+        });
+        await new Promise<void>(resolve => target.listen(0, '127.0.0.1', resolve));
+        const port = (target.address() as AddressInfo).port;
+        const definition = job('secret-job', 'inactive');
+        definition.STEPS[0] = {
+            ORDER: 1,
+            ID: 'only',
+            NAME: 'Secret request',
+            TYPE: 'RESTAPI',
+            STEP_PARAMS: {
+                URL: 'http://127.0.0.1:' + port + '/secret',
+                HEADERS: { 'X-Managed-Secret': '{{secrets.API_TOKEN}}' }
+            }
+        };
+        await jobs.create(definition);
+        const queued = await executions.enqueueManual(definition.id);
+        try {
+            await manager.start();
+            await waitFor(async () => (await executions.getSummary(queued.executionId))?.status === 'success');
+            expect(receivedSecret).toBe(secretValue);
+            expect(JSON.stringify(await executions.getDetail(queued.executionId))).not.toContain(secretValue);
+        } finally {
+            await manager.shutdown(1_000);
+            await new Promise<void>(resolve => target.close(() => resolve()));
+        }
+    });
+
+    it('records actor-aware mutation audits and rejects audit mutation in PostgreSQL', async () => {
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000, security.secrets);
+        const app = createApp({
+            pool,
+            jobs: new JobService(jobs, executions),
+            executions,
+            manager,
+            security
+        });
+        await authenticatedRequest(app).post('/api/jobs').send(job('audited-job', 'inactive')).expect(201);
+        await waitFor(async () => {
+            const events = await security.audit.list({ limit: 50, action: 'job.create' });
+            return events.items.some(item => item.resourceId === null || item.resourceId === 'audited-job');
+        });
+        const page = await authenticatedRequest(app).get('/api/security/audit?action=job.create').expect(200);
+        expect(page.body.items.some((item: { actorLabel: string }) => item.actorLabel === ADMIN_EMAIL)).toBe(true);
+        const auditId = page.body.items[0].auditId as string;
+        await expect(pool.query(
+            'UPDATE security_audit_events SET action = $2 WHERE id = $1',
+            [auditId, 'tampered']
+        )).rejects.toThrow(/append-only/u);
     });
 });
 
@@ -434,6 +689,10 @@ function job(id: string, status: Job['status'] = 'active'): Job {
         timezone: 'UTC',
         STEPS: [{ ORDER: 1, ID: 'only', NAME: 'Only', TYPE: 'SCRIPT', STEP_PARAMS: { CODE: '() => ({ ok: true })' } }]
     };
+}
+
+function authenticatedRequest(app: Express) {
+    return request.agent(app).set('Authorization', 'Bearer ' + adminToken);
 }
 
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 5000): Promise<void> {

@@ -38,7 +38,9 @@ const VALUE_CONDITION_OPERATORS = new Set<WorkflowConditionOperator>([
     'equals', 'not_equals', 'greater_than', 'greater_than_or_equal',
     'less_than', 'less_than_or_equal', 'contains'
 ]);
-const RESERVED_CONTEXT_ROOTS = new Set(['input', 'item', 'index']);
+const RESERVED_CONTEXT_ROOTS = new Set(['input', 'secrets', 'item', 'index']);
+const SECRET_NAME = /^[A-Z][A-Z0-9_]{1,63}$/u;
+const SECRET_TEMPLATE = /\{\{\s*secrets\.([^{}\s]+)\s*\}\}/gu;
 
 export class JobValidationError extends Error {
     readonly issues: ValidationIssue[];
@@ -73,6 +75,7 @@ export function validateJobDefinition(input: unknown): JobValidationResult {
     validateJobStatus(normalizedInput.status, errors);
     validateSchedule(normalizedInput.schedule, normalizedInput.timezone, errors);
     validateExecutionSettings(normalizedInput, errors);
+    validateSecretTemplates(normalizedInput, '$', errors);
 
     const rawSteps = normalizedInput.STEPS;
 
@@ -309,7 +312,10 @@ function normalizeJobDefinition(input: unknown): unknown {
             if (!isRecord(rawWebhook)) return rawWebhook;
             return {
                 ...rawWebhook,
-                ...(typeof rawWebhook.URL === 'string' ? { URL: rawWebhook.URL.trim() } : {})
+                ...(typeof rawWebhook.URL === 'string' ? { URL: rawWebhook.URL.trim() } : {}),
+                ...(typeof rawWebhook.SIGNING_SECRET === 'string'
+                    ? { SIGNING_SECRET: rawWebhook.SIGNING_SECRET.trim().toUpperCase() }
+                    : {})
             };
         });
     }
@@ -407,7 +413,36 @@ function validateWebhooks(value: unknown, errors: ValidationIssue[]): void {
             }
 
         }
+        if (item.SIGNING_SECRET !== undefined &&
+            (typeof item.SIGNING_SECRET !== 'string' || !SECRET_NAME.test(item.SIGNING_SECRET))) {
+            addIssue(
+                errors,
+                `${path}.SIGNING_SECRET`,
+                'INVALID_SIGNING_SECRET',
+                'SIGNING_SECRET must be a valid managed secret name.'
+            );
+        }
     });
+}
+
+function validateSecretTemplates(value: unknown, path: string, errors: ValidationIssue[]): void {
+    if (typeof value === 'string') {
+        for (const match of value.matchAll(SECRET_TEMPLATE)) {
+            if (!SECRET_NAME.test(match[1] as string)) {
+                addIssue(errors, path, 'INVALID_SECRET_REFERENCE', 'Managed secret references must use uppercase secret names.');
+            }
+        }
+        return;
+    }
+    if (Array.isArray(value)) {
+        value.forEach((item, index) => validateSecretTemplates(item, `${path}[${index}]`, errors));
+        return;
+    }
+    if (isRecord(value)) {
+        for (const [key, item] of Object.entries(value)) {
+            validateSecretTemplates(item, path === '$' ? key : `${path}.${key}`, errors);
+        }
+    }
 }
 
 function validateRetryPolicy(value: unknown, path: string, errors: ValidationIssue[]): void {
@@ -579,8 +614,11 @@ function validateStepParameters(step: Record<string, unknown>, stepPath: string,
             break;
 
         case 'SCRIPT':
+            validateCodeParameters(params, paramsPath, errors);
+            break;
         case 'PYTHON':
             validateCodeParameters(params, paramsPath, errors);
+            validateEnvironment(params.ENV, paramsPath + '.ENV', errors);
             break;
       }
 
@@ -657,6 +695,19 @@ function validateCodeParameters(params: Record<string, unknown>, path: string, e
         (typeof params.TIMEOUT_MS !== 'number' || !Number.isInteger(params.TIMEOUT_MS) || params.TIMEOUT_MS < 1)
     ) {
         addIssue(errors, `${path}.TIMEOUT_MS`, 'INVALID_TIMEOUT', 'TIMEOUT_MS must be a positive integer.');
+    }
+}
+
+function validateEnvironment(value: unknown, path: string, errors: ValidationIssue[]): void {
+    if (value === undefined) return;
+    if (!isRecord(value)) {
+        addIssue(errors, path, 'INVALID_ENV', 'ENV must be an object.');
+        return;
+    }
+    for (const [name, item] of Object.entries(value)) {
+        if (typeof item !== 'string') {
+            addIssue(errors, path + '.' + name, 'INVALID_ENV_VALUE', 'Environment variable values must be strings.');
+        }
     }
 }
 

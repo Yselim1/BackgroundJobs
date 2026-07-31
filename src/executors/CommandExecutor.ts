@@ -1,13 +1,17 @@
 import type { Step } from '../types/index.js';
 import type { ExecutorOptions, IStepExecutor } from './IStepExecutor.js';
 import { runProcess } from './processRunner.js';
+import { resolveContextTemplates } from '../utils/contextResolver.js';
 
 export class CommandExecutor implements IStepExecutor {
-    async execute(step: Step, _context: Record<string, unknown>, options: ExecutorOptions): Promise<unknown> {
-        const command = step.STEP_PARAMS?.COMMAND;
-        const timeoutMs = step.STEP_PARAMS?.TIMEOUT_MS ?? 30000;
-        const cwd = step.STEP_PARAMS?.CWD;
-        const env = step.STEP_PARAMS?.ENV;
+    async execute(step: Step, context: Record<string, unknown>, options: ExecutorOptions): Promise<unknown> {
+        const params = resolveContextTemplates(step.STEP_PARAMS ?? {}, context, {
+            allowedStepIds: new Set(step.DEPENDS_ON ?? [])
+        });
+        const command = params.COMMAND;
+        const timeoutMs = params.TIMEOUT_MS ?? 30000;
+        const cwd = params.CWD;
+        const env = params.ENV;
         if (typeof command !== 'string' || command.length === 0) throw new Error('COMMAND execution failed: COMMAND param is missing.');
         if (typeof timeoutMs !== 'number' || !Number.isInteger(timeoutMs) || timeoutMs <= 0) throw new Error('COMMAND TIMEOUT_MS must be a positive integer.');
         if (cwd !== undefined && typeof cwd !== 'string') throw new Error('COMMAND CWD must be a string.');

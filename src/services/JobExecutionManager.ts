@@ -1,7 +1,8 @@
 import { JobRunner, type ExecutionObserver } from '../core/JobRunner.js';
-import { ExecutionAbortError } from '../errors.js';
+import { AppError, ExecutionAbortError } from '../errors.js';
 import { ExecutionRepository, type ClaimedExecution } from '../repositories/ExecutionRepository.js';
-import type { ExecutionSummary, Step, StepAttemptLog, StepLog } from '../types/index.js';
+import type { AuthenticatedActor, ExecutionSummary, Step, StepAttemptLog, StepLog } from '../types/index.js';
+import type { SecretService } from './SecretService.js';
 
 export class JobExecutionManager {
     private acceptingWork = false;
@@ -15,7 +16,8 @@ export class JobExecutionManager {
         private readonly executions: ExecutionRepository,
         private readonly runner = new JobRunner(),
         private readonly workerConcurrency = 4,
-        private readonly schedulerPollMs = 1000
+        private readonly schedulerPollMs = 1000,
+        private readonly secrets?: SecretService
     ) {}
 
     get started(): boolean { return this.servicesStarted; }
@@ -29,8 +31,8 @@ export class JobExecutionManager {
         await this.dispatcherTick();
     }
 
-    async cancel(executionId: string): Promise<ExecutionSummary> {
-        const cancellation = await this.executions.requestCancellation(executionId);
+    async cancel(executionId: string, actor?: AuthenticatedActor): Promise<ExecutionSummary> {
+        const cancellation = await this.executions.requestCancellation(executionId, actor);
         if (cancellation.shouldAbort) {
             this.controllers.get(executionId)?.abort(
                 new ExecutionAbortError('EXECUTION_CANCELLED', 'Execution cancellation was requested.')
@@ -113,10 +115,14 @@ export class JobExecutionManager {
                     new ExecutionAbortError('JOB_TIMEOUT', `Job exceeded TIMEOUT_MS (${jobDefinition.TIMEOUT_MS}ms).`)
                 ), remaining);
             }
+            const secretValues = this.secrets === undefined
+                ? {}
+                : await this.secrets.resolveForJob(jobDefinition);
             const result = await this.runner.run(jobDefinition, {
                 signal: controller.signal,
                 observer: this.observerFor(executionId),
-                input
+                input,
+                secrets: secretValues
             });
             const cancellationWonRace = await this.executions.isCancellationRequested(executionId);
             const status = cancellationWonRace ? 'cancelled' : result.status;
@@ -129,7 +135,8 @@ export class JobExecutionManager {
         } catch (error: unknown) {
             const message = error instanceof Error ? error.message : String(error);
             await this.executions.cancelUnfinishedSteps(executionId, message).catch(() => undefined);
-            await this.executions.finishExecution(executionId, 'failed', 'EXECUTION_PERSISTENCE_FAILED', message).catch(() => undefined);
+            const errorCode = error instanceof AppError ? error.code : 'EXECUTION_PERSISTENCE_FAILED';
+            await this.executions.finishExecution(executionId, 'failed', errorCode, message).catch(() => undefined);
             console.error(`[DISPATCHER] Execution ${executionId} failed outside the runner:`, error);
         } finally {
             if (timeout !== undefined) clearTimeout(timeout);

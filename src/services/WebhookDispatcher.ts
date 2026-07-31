@@ -1,5 +1,6 @@
 import { createHmac } from 'node:crypto';
 import type { ClaimedWebhookDelivery, WebhookRepository } from '../repositories/WebhookRepository.js';
+import type { SecretService } from './SecretService.js';
 
 export interface WebhookDispatcherOptions {
     concurrency?: number;
@@ -8,6 +9,7 @@ export interface WebhookDispatcherOptions {
     requestTimeoutMs?: number;
     signingKey?: string;
     fetchImplementation?: typeof fetch;
+    secrets?: SecretService;
 }
 
 export class WebhookDispatcher {
@@ -22,6 +24,7 @@ export class WebhookDispatcher {
     private readonly requestTimeoutMs: number;
     private readonly signingKey: string | undefined;
     private readonly fetchImplementation: typeof fetch;
+    private readonly secrets: SecretService | undefined;
 
     constructor(private readonly deliveries: WebhookRepository, options: WebhookDispatcherOptions = {}) {
         this.concurrency = options.concurrency ?? 2;
@@ -30,6 +33,7 @@ export class WebhookDispatcher {
         this.requestTimeoutMs = options.requestTimeoutMs ?? 10_000;
         this.signingKey = options.signingKey;
         this.fetchImplementation = options.fetchImplementation ?? fetch;
+        this.secrets = options.secrets;
     }
 
     get started(): boolean { return this.servicesStarted; }
@@ -79,19 +83,21 @@ export class WebhookDispatcher {
     private async deliver(delivery: ClaimedWebhookDelivery): Promise<void> {
         const body = JSON.stringify(delivery.payload);
         const timestamp = Math.floor(Date.now() / 1000).toString();
-        const headers: Record<string, string> = {
-            'Content-Type': 'application/json',
-            'User-Agent': 'backgroundjobs-framework-webhook/1.0',
-            'X-Backgroundjobs-Delivery': delivery.deliveryId,
-            'X-Backgroundjobs-Event': delivery.eventType,
-            'X-Backgroundjobs-Timestamp': timestamp
-        };
-        if (this.signingKey !== undefined) {
-            headers['X-Backgroundjobs-Signature'] = createWebhookSignature(this.signingKey, timestamp, body);
-        }
-
         let responseStatus: number | null = null;
         try {
+            const signingKey = delivery.signingSecretName === null
+                ? this.signingKey
+                : await this.resolveSigningSecret(delivery.signingSecretName);
+            const headers: Record<string, string> = {
+                'Content-Type': 'application/json',
+                'User-Agent': 'backgroundjobs-framework-webhook/1.0',
+                'X-Backgroundjobs-Delivery': delivery.deliveryId,
+                'X-Backgroundjobs-Event': delivery.eventType,
+                'X-Backgroundjobs-Timestamp': timestamp
+            };
+            if (signingKey !== undefined) {
+                headers['X-Backgroundjobs-Signature'] = createWebhookSignature(signingKey, timestamp, body);
+            }
             const response = await this.fetchImplementation(delivery.url, {
                 method: 'POST',
                 headers,
@@ -108,6 +114,13 @@ export class WebhookDispatcher {
             const message = (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
             await this.deliveries.fail(delivery.deliveryId, this.maxAttempts, message, responseStatus);
         }
+    }
+
+    private async resolveSigningSecret(name: string): Promise<string> {
+        if (this.secrets === undefined) {
+            throw new Error('Webhook references managed signing secret ' + name + ', but secret resolution is unavailable.');
+        }
+        return this.secrets.resolve(name);
     }
 }
 

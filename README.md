@@ -15,6 +15,19 @@ npm run dev
 
 `npm run dev` starts the Compose PostgreSQL service, waits until it is healthy, applies any pending migrations, and then starts the backend watcher. Docker must already be running. To start only the backend watcher when PostgreSQL is managed separately, use `npm run dev:server`.
 
+There are no default credentials. On the first installation, prepare the database and create exactly one initial administrator:
+
+```powershell
+npm run dev:setup
+$env:BOOTSTRAP_ADMIN_EMAIL='admin@example.com'
+$env:BOOTSTRAP_ADMIN_NAME='Administrator'
+$env:BOOTSTRAP_ADMIN_PASSWORD='replace-with-a-long-unique-password'
+npm run auth:bootstrap
+npm run dev:server
+```
+
+Bootstrap refuses to run after the first user exists. Subsequent local starts need only `npm run dev`.
+
 The default connection is `postgres://postgres:postgres@localhost:5432/backgroundjobs`; copy `.env.example` into your environment when different values are needed. Environment variables are not automatically loaded from a file.
 
 Configuration:
@@ -26,6 +39,12 @@ Configuration:
 | `WORKER_CONCURRENCY` | `4` | Maximum concurrently running jobs |
 | `SCHEDULER_POLL_MS` | `1000` | Scheduler and dispatcher poll interval |
 | `SHUTDOWN_GRACE_MS` | `10000` | Grace before running work is interrupted |
+| `AUTH_SESSION_TTL_MS` | `43200000` | Absolute server-side session lifetime |
+| `AUTH_SESSION_IDLE_MS` | `1800000` | Sliding idle-session lifetime |
+| `AUTH_COOKIE_SECURE` | production: `true` | Restrict session and CSRF cookies to HTTPS |
+| `CORS_ALLOWED_ORIGINS` | local API and Vite origins | Exact browser origins allowed to call the API |
+| `TRUST_PROXY` | `false` | Trust one reverse proxy hop for client addressing |
+| `SECRETS_MASTER_KEY` | unset | Base64-encoded 32-byte AES-256 managed-secret key |
 | `PORT` | `3000` | HTTP port |
 
 Application startup checks the migration version and exits with an actionable error if the database is behind. Migrations are numbered SQL files and `npm run migrate` serializes concurrent migrators with a PostgreSQL advisory lock.
@@ -163,7 +182,8 @@ Jobs can define up to ten terminal webhooks:
   "WEBHOOKS": [
     {
       "URL": "https://example.internal/job-events",
-      "EVENTS": ["success", "failed", "cancelled"]
+      "EVENTS": ["success", "failed", "cancelled"],
+      "SIGNING_SECRET": "WEBHOOK_SIGNING_KEY"
     }
   ]
 }
@@ -179,9 +199,62 @@ Webhook configuration:
 | WEBHOOK_POLL_MS | 500 | Outbox poll interval |
 | WEBHOOK_MAX_ATTEMPTS | 5 | Maximum attempts per delivery |
 | WEBHOOK_REQUEST_TIMEOUT_MS | 10000 | Timeout for each request |
-| WEBHOOK_SIGNING_KEY | unset | Optional global HMAC-SHA256 key |
+| WEBHOOK_SIGNING_KEY | unset | Legacy optional global HMAC-SHA256 key |
 
-Each request includes X-Backgroundjobs-Delivery, X-Backgroundjobs-Event, and X-Backgroundjobs-Timestamp. When WEBHOOK_SIGNING_KEY is configured, X-Backgroundjobs-Signature contains an HMAC-SHA256 signature over the timestamp and exact body. Per-job credentials and secret storage remain deferred to the security/authentication milestone.
+Each request includes X-Backgroundjobs-Delivery, X-Backgroundjobs-Event, and X-Backgroundjobs-Timestamp. When `SIGNING_SECRET` names a managed secret, X-Backgroundjobs-Signature contains an HMAC-SHA256 signature over the timestamp and exact body. The legacy global `WEBHOOK_SIGNING_KEY` is used only when a webhook does not select a managed signing secret.
+
+## Security and authentication
+
+Every `/api` endpoint is authenticated except `POST /api/auth/login`. Liveness and readiness remain public. Browser sessions use random opaque identifiers stored only as SHA-256 hashes in PostgreSQL; the session cookie is `HttpOnly` and `SameSite=Strict`, while every cookie-authenticated mutation must also present the matching CSRF header. Automation can use revocable `bj_pat_...` bearer tokens, whose raw values are returned only once and are never stored.
+
+Roles are intentionally narrow:
+
+| Role | Access |
+| --- | --- |
+| `viewer` | Read jobs, execution history, events, and platform status |
+| `operator` | Viewer access plus queueing jobs and cancelling executions |
+| `admin` | Operator access plus job definitions, users, roles, managed secrets, and audit history |
+
+Job-definition writes remain admin-only because command, Python, script, and plugin executors are privileged code-execution capabilities. Passwords use native Argon2id, repeated failures produce a temporary account lock, password resets revoke sessions and API tokens, disabled users lose active access, and the final active administrator cannot be disabled or demoted.
+
+Security endpoints:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/auth/me` | Current identity, role, and permissions |
+| `POST` | `/api/auth/logout` | Revoke the current browser session |
+| `POST` | `/api/auth/password` | Change password and revoke existing access |
+| `GET/POST/DELETE` | `/api/auth/tokens` | Manage the current user's API tokens |
+| `GET/POST/PATCH` | `/api/security/users` | Administer users, roles, and status |
+| `GET/PUT/DELETE` | `/api/security/secrets` | List metadata, store/rotate, or delete secrets |
+| `GET` | `/api/security/audit` | Filter cursor-paginated immutable audit history |
+
+The audit table records request IDs, actor identity, action, result, resource, client address, and user agent. A PostgreSQL trigger rejects updates and deletes. Passwords, request bodies, API-token values, and managed-secret values are never written to audit metadata.
+
+Managed secrets are encrypted with AES-256-GCM. Generate a master key outside the repository:
+
+```powershell
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
+$env:SECRETS_MASTER_KEY='paste-the-generated-value'
+```
+
+Job definitions reference names rather than values:
+
+```json
+{
+  "TYPE": "RESTAPI",
+  "STEP_PARAMS": {
+    "URL": "https://example.internal/report",
+    "HEADERS": {
+      "Authorization": "Bearer {{secrets.REPORT_API_TOKEN}}"
+    }
+  }
+}
+```
+
+Only referenced secrets are decrypted for an execution. Resolved values are redacted from persisted outputs, errors, and REST URL logs. Command and Python steps should consume secrets through `ENV` templates rather than command-line arguments.
+
+Production startup fails unless secure cookies and an explicit `CORS_ALLOWED_ORIGINS` list are configured. Terminate TLS at the application or a trusted reverse proxy, set `TRUST_PROXY=true` only for that topology, and keep the dashboard and API on the same origin where possible.
 
 ## History retention
 
@@ -273,9 +346,9 @@ npm install
 npm run dev
 ~~~
 
-For production, run `npm run build` inside `dashboard/` and serve its `dist/` output behind the same origin/reverse proxy as the API. `VITE_API_BASE_URL` can point at another API origin once that deployment has an explicit CORS and authentication policy.
+For production, run `npm run build` inside `dashboard/` and serve its `dist/` output behind the same origin/reverse proxy as the API. `VITE_API_BASE_URL` can point at an origin explicitly listed in `CORS_ALLOWED_ORIGINS`.
 
-The dashboard uses `GET /api/platform/overview` for operational counts and `GET /api/platform/executors` for registered executor types. It supports execution filtering, live SSE updates, job runs, cancellation, fan-out attempt visibility, and workflow progress inspection. Authentication and identity-aware audit trails remain deferred to the security milestone.
+The dashboard provides login/logout, permission-aware run/cancel controls, and an admin security console for user lifecycle, role assignment, managed-secret rotation, and immutable audit review. It also supports execution filtering, authenticated live SSE updates, fan-out attempt visibility, and workflow progress inspection.
 
 ## Adding Kafka or RabbitMQ later
 
