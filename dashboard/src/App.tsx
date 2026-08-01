@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
     AUTH_EXPIRED_EVENT,
     cancelExecution,
+    changeOwnPassword,
     executionFeedUrl,
     getAttentionItem,
     getCurrentUser,
@@ -90,6 +91,9 @@ export function App() {
     }
     if (session === null) {
         return <LoginScreen onAuthenticated={setSession} />;
+    }
+    if (session.passwordChangeRequired) {
+        return <PasswordChangeScreen session={session} onComplete={() => setSession(null)} />;
     }
     return <Dashboard session={session} onLoggedOut={() => setSession(null)} />;
 }
@@ -596,6 +600,58 @@ function LoginScreen(props: { onAuthenticated: (session: AuthSession) => void })
                     </button>
                 </form>
                 <small className="bootstrap-note">First installation? Create the initial administrator with <code>npm run auth:bootstrap</code>.</small>
+            </section>
+        </main>
+    );
+}
+
+function PasswordChangeScreen(props: { session: AuthSession; onComplete: () => void }) {
+    const [currentPassword, setCurrentPassword] = useState('');
+    const [newPassword, setNewPassword] = useState('');
+    const [confirmation, setConfirmation] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<string>();
+
+    const submit = async (event: FormEvent) => {
+        event.preventDefault();
+        if (newPassword !== confirmation) {
+            setError('New password confirmation does not match.');
+            return;
+        }
+        setBusy(true);
+        try {
+            await changeOwnPassword(currentPassword, newPassword);
+            props.onComplete();
+        } catch (caught) {
+            setError(caught instanceof Error ? caught.message : String(caught));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const signOut = async () => {
+        try { await logout(); }
+        finally { props.onComplete(); }
+    };
+
+    return (
+        <main className='auth-shell'>
+            <section className='auth-card'>
+                <div className='brand auth-brand'>
+                    <span className='brand-mark' aria-hidden='true'>W</span>
+                    <span><strong>Workline</strong><small>Secure operations</small></span>
+                </div>
+                <p className='eyebrow'>Password change required</p>
+                <h1>Choose your permanent password.</h1>
+                <p className='auth-intro'>Welcome, {props.session.user.displayName}. Your temporary password must be replaced before you can use the operations console.</p>
+                {error !== undefined && <div className='error-banner' role='alert'>{error}</div>}
+                <form className='auth-form' onSubmit={event => void submit(event)}>
+                    <label><span>Temporary password</span><input type='password' autoComplete='current-password' value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} required /></label>
+                    <label><span>New password</span><input type='password' autoComplete='new-password' minLength={12} value={newPassword} onChange={event => setNewPassword(event.target.value)} required /></label>
+                    <label><span>Confirm new password</span><input type='password' autoComplete='new-password' minLength={12} value={confirmation} onChange={event => setConfirmation(event.target.value)} required /></label>
+                    <button className='button button-primary' disabled={busy}>{busy ? 'Changing password…' : 'Change password'}</button>
+                    <button className='button button-quiet' type='button' disabled={busy} onClick={() => void signOut()}>Sign out</button>
+                </form>
             </section>
         </main>
     );

@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { AppError } from '../errors.js';
 import { SecretRepository } from '../repositories/SecretRepository.js';
-import type { Job, ManagedSecretMetadata } from '../types/index.js';
+import type { Job, ManagedSecretMetadata, SecretUsage } from '../types/index.js';
 
 const SECRET_NAME = /^[A-Z][A-Z0-9_]{1,63}$/u;
 const SECRET_TEMPLATE = /\{\{\s*secrets\.([A-Z][A-Z0-9_]{1,63})\s*\}\}/gu;
@@ -23,13 +23,23 @@ export class SecretService {
         rawName: unknown,
         rawValue: unknown,
         rawDescription: unknown,
-        actorUserId: string
+        actorUserId: string,
+        rawOwnerUserId?: unknown,
+        rawExpiresOn?: unknown
     ): Promise<ManagedSecretMetadata> {
         const name = normalizeSecretName(rawName);
         if (typeof rawValue !== 'string' || rawValue.length === 0 || rawValue.length > 65_536) {
             throw new AppError('INVALID_SECRET_VALUE', 'Secret value must contain between 1 and 65536 characters.', 422);
         }
         const description = normalizeDescription(rawDescription);
+        const existing = await this.secrets.getByName(name);
+        const ownerUserId = rawOwnerUserId === undefined
+            ? existing?.owner_user_id ?? actorUserId
+            : normalizeOwnerUserId(rawOwnerUserId);
+        if (ownerUserId !== null && !(await this.secrets.userExists(ownerUserId))) {
+            throw new AppError('SECRET_OWNER_NOT_FOUND', 'The selected secret owner was not found.', 422);
+        }
+        const expiresOn = normalizeExpiresOn(rawExpiresOn);
         const key = this.requireKey();
         const nonce = randomBytes(12);
         const cipher = createCipheriv('aes-256-gcm', key, nonce);
@@ -41,14 +51,34 @@ export class SecretService {
             encryptedValue,
             nonce,
             authTag: cipher.getAuthTag(),
-            createdByUserId: actorUserId
+            createdByUserId: actorUserId,
+            ownerUserId,
+            lastRotatedByUserId: actorUserId,
+            expiresOn
         });
     }
 
-    async delete(rawName: unknown): Promise<void> {
+    async usage(rawName: unknown): Promise<SecretUsage[]> {
         const name = normalizeSecretName(rawName);
-        if (!(await this.secrets.delete(name))) {
+        if ((await this.secrets.getByName(name)) === undefined) {
             throw new AppError('SECRET_NOT_FOUND', 'Managed secret ' + name + ' was not found.', 404);
+        }
+        return this.secrets.usage(name);
+    }
+
+    async delete(rawName: unknown, force = false): Promise<void> {
+        const name = normalizeSecretName(rawName);
+        const result = await this.secrets.delete(name, force);
+        if (result.status === 'not_found') {
+            throw new AppError('SECRET_NOT_FOUND', 'Managed secret ' + name + ' was not found.', 404);
+        }
+        if (result.status === 'in_use') {
+            throw new AppError(
+                'SECRET_IN_USE',
+                'Managed secret ' + name + ' is still referenced by one or more jobs.',
+                409,
+                { usage: result.usage }
+            );
         }
     }
 
@@ -126,4 +156,36 @@ function normalizeDescription(value: unknown): string | null {
         throw new AppError('INVALID_SECRET_DESCRIPTION', 'Secret description must contain at most 500 characters.', 422);
     }
     return value.trim() || null;
+}
+
+function normalizeOwnerUserId(value: unknown): string | null {
+    if (value === null) return null;
+    if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value)) {
+        throw new AppError('INVALID_SECRET_OWNER', 'ownerUserId must be a user UUID or null.', 422);
+    }
+    return value;
+}
+
+function normalizeExpiresOn(value: unknown): string | null {
+    if (value === null) return null;
+    if (value === undefined) return dateAfterDays(90);
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) {
+        throw new AppError('INVALID_SECRET_EXPIRY', 'expiresOn must be a YYYY-MM-DD date or null.', 422);
+    }
+    const parsed = new Date(value + 'T00:00:00.000Z');
+    if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value || value < today()) {
+        throw new AppError('INVALID_SECRET_EXPIRY', 'expiresOn must be today or a future calendar date.', 422);
+    }
+    return value;
+}
+
+function dateAfterDays(days: number): string {
+    const date = new Date();
+    date.setUTCHours(0, 0, 0, 0);
+    date.setUTCDate(date.getUTCDate() + days);
+    return date.toISOString().slice(0, 10);
+}
+
+function today(): string {
+    return new Date().toISOString().slice(0, 10);
 }

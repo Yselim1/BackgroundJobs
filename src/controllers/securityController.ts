@@ -1,9 +1,14 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import type { AppConfig } from '../config.js';
+import { getSchemaVersions } from '../db/migrations.js';
+import type { DatabasePool } from '../db/pool.js';
 import { AppError } from '../errors.js';
 import { AuditRepository, type AuditActorType, type AuditListOptions } from '../repositories/AuditRepository.js';
 import { requirePermission } from '../security/middleware.js';
 import { AuthService } from '../services/AuthService.js';
 import { SecretService } from '../services/SecretService.js';
+import type { JobExecutionManager } from '../services/JobExecutionManager.js';
+import type { WebhookDispatcher } from '../services/WebhookDispatcher.js';
 import type { AuditEvent } from '../types/index.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -11,10 +16,18 @@ const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+
 const AUDIT_ACTOR_TYPES = new Set<AuditActorType>(['anonymous', 'user', 'api_token', 'system']);
 const AUDIT_EXPORT_LIMIT = 10_000;
 
+export interface SecurityControllerRuntime {
+    pool: DatabasePool;
+    config: AppConfig;
+    manager: JobExecutionManager;
+    webhookDispatcher: WebhookDispatcher | undefined;
+}
+
 export function createSecurityController(
     auth: AuthService,
     secrets: SecretService,
-    audit: AuditRepository
+    audit: AuditRepository,
+    runtime: SecurityControllerRuntime
 ): Router {
     const router = Router();
     router.use((_req, res, next) => {
@@ -25,6 +38,9 @@ export function createSecurityController(
     router.get('/users', requirePermission('users:manage'), route(async (_req, res) => {
         res.status(200).json({ items: await auth.listUsers() });
     }));
+    router.get('/roles', requirePermission('users:manage'), (_req, res) => {
+        res.status(200).json({ items: auth.roles() });
+    });
     router.post('/users', requirePermission('users:manage'), route(async (req, res) => {
         res.status(201).json(await auth.createUser(req.body));
     }));
@@ -34,6 +50,23 @@ export function createSecurityController(
     router.post('/users/:id/password', requirePermission('users:manage'), route(async (req, res) => {
         const body = requireBody(req.body);
         await auth.resetPassword(req.params.id as string, body.password);
+        res.status(204).send();
+    }));
+    router.get('/users/:id/access', requirePermission('users:manage'), route(async (req, res) => {
+        res.status(200).json(await auth.getUserAccess(req.params.id as string));
+    }));
+    router.post('/users/:id/unlock', requirePermission('users:manage'), route(async (req, res) => {
+        res.status(200).json(await auth.unlockUser(req.params.id as string));
+    }));
+    router.post('/users/:id/revoke-access', requirePermission('users:manage'), route(async (req, res) => {
+        res.status(200).json(await auth.revokeUserAccess(req.params.id as string));
+    }));
+    router.delete('/users/:id/sessions/:sessionId', requirePermission('users:manage'), route(async (req, res) => {
+        await auth.revokeUserSession(req.params.id as string, req.params.sessionId as string);
+        res.status(204).send();
+    }));
+    router.delete('/users/:id/tokens/:tokenId', requirePermission('users:manage'), route(async (req, res) => {
+        await auth.revokeUserApiToken(req.params.id as string, req.params.tokenId as string);
         res.status(204).send();
     }));
 
@@ -46,12 +79,63 @@ export function createSecurityController(
             req.params.name,
             body.value,
             body.description,
-            req.auth!.userId
+            req.auth!.userId,
+            body.ownerUserId,
+            body.expiresOn
         ));
     }));
+    router.get('/secrets/:name/usage', requirePermission('secrets:manage'), route(async (req, res) => {
+        res.status(200).json({ items: await secrets.usage(req.params.name) });
+    }));
     router.delete('/secrets/:name', requirePermission('secrets:manage'), route(async (req, res) => {
-        await secrets.delete(req.params.name);
+        const force = parseForce(req.query.force);
+        await secrets.delete(req.params.name, force);
         res.status(204).send();
+    }));
+
+    router.get('/system', requirePermission('system:read'), route(async (_req, res) => {
+        const started = performance.now();
+        await runtime.pool.query('SELECT 1');
+        const databaseLatencyMs = Math.max(0, Math.round((performance.now() - started) * 10) / 10);
+        const schema = await getSchemaVersions(runtime.pool);
+        res.status(200).json({
+            generatedAt: new Date().toISOString(),
+            services: {
+                executionManager: runtime.manager.started ? 'online' : 'offline',
+                webhookDispatcher: runtime.webhookDispatcher?.started === true ? 'online' : 'offline'
+            },
+            database: {
+                status: 'online',
+                latencyMs: databaseLatencyMs,
+                schemaVersion: schema.current,
+                expectedSchemaVersion: schema.latest
+            },
+            workers: {
+                concurrency: runtime.manager.capacity,
+                schedulerPollMs: runtime.config.schedulerPollMs,
+                shutdownGraceMs: runtime.config.shutdownGraceMs,
+                databasePoolMax: runtime.config.dbPoolMax
+            },
+            webhooks: {
+                concurrency: runtime.config.webhookConcurrency,
+                pollMs: runtime.config.webhookPollMs,
+                maxAttempts: runtime.config.webhookMaxAttempts,
+                requestTimeoutMs: runtime.config.webhookRequestTimeoutMs,
+                legacySigningKeyConfigured: runtime.config.webhookSigningKey !== undefined
+            },
+            authentication: {
+                sessionTtlMs: runtime.config.authSessionTtlMs,
+                sessionIdleMs: runtime.config.authSessionIdleMs,
+                secureCookies: runtime.config.authCookieSecure,
+                trustProxy: runtime.config.trustProxy
+            },
+            secrets: { configured: secrets.configured },
+            retention: {
+                mode: 'manual',
+                dryRunCommand: 'npm run retention -- --days <days>',
+                confirmCommand: 'npm run retention -- --days <days> --batch-size 500 --confirm'
+            }
+        });
     }));
 
     router.get('/audit', requirePermission('audit:read'), route(async (req, res) => {
@@ -134,6 +218,12 @@ function parseOptionalPage(value: unknown): number | undefined {
     return parsed;
 }
 
+function parseForce(value: unknown): boolean {
+    if (value === undefined) return false;
+    if (value === 'true') return true;
+    throw new AppError('INVALID_FORCE', 'force must be true when provided.', 400);
+}
+
 function parseAuditFilters(query: Request['query']): Omit<AuditListOptions, 'limit' | 'cursor' | 'page'> {
     const action = parseOptionalString(query.action, 'action');
     const actorUserId = parseOptionalString(query.actorUserId, 'actorUserId');
@@ -146,6 +236,8 @@ function parseAuditFilters(query: Request['query']): Omit<AuditListOptions, 'lim
     }
     const actorLabel = parseOptionalString(query.actorLabel, 'actorLabel');
     const resource = parseOptionalString(query.resource, 'resource');
+    const resourceType = parseOptionalString(query.resourceType, 'resourceType');
+    const resourceId = parseOptionalString(query.resourceId, 'resourceId');
     const outcome = parseOptionalString(query.outcome, 'outcome');
     if (outcome !== undefined && outcome !== 'success' && outcome !== 'failure') {
         throw new AppError('INVALID_AUDIT_OUTCOME', 'outcome must be success or failure.', 400);
@@ -161,6 +253,8 @@ function parseAuditFilters(query: Request['query']): Omit<AuditListOptions, 'lim
         ...(actorType === undefined ? {} : { actorType: actorType as AuditActorType }),
         ...(actorLabel === undefined ? {} : { actorLabel }),
         ...(resource === undefined ? {} : { resource }),
+        ...(resourceType === undefined ? {} : { resourceType }),
+        ...(resourceId === undefined ? {} : { resourceId }),
         ...(outcome === undefined ? {} : { outcome }),
         ...(from === undefined ? {} : { from }),
         ...(to === undefined ? {} : { to })

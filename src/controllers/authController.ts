@@ -6,6 +6,7 @@ import {
     requestIp,
     requestUserAgent,
     requireAuthentication,
+    requirePasswordChangeComplete,
     requirePermission,
     setSessionCookies
 } from '../security/middleware.js';
@@ -48,6 +49,7 @@ export function createAuthController(auth: AuthService, config: AppConfig): Rout
         clearSessionCookies(res, config.authCookieSecure);
         res.status(204).send();
     }));
+    router.use(requirePasswordChangeComplete);
     router.get('/tokens', requirePermission('tokens:manage_self'), route(async (req, res) => {
         res.status(200).json({ items: await auth.listApiTokens(req.auth!) });
     }));

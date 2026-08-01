@@ -22,6 +22,8 @@ describe('security primitives', () => {
         expect(hasPermission('operator', 'jobs:run')).toBe(true);
         expect(hasPermission('operator', 'jobs:write')).toBe(false);
         expect(hasPermission('admin', 'secrets:manage')).toBe(true);
+        expect(hasPermission('admin', 'system:read')).toBe(true);
+        expect(hasPermission('operator', 'system:read')).toBe(false);
         expect(permissionsForRole('admin')).toContain('audit:read');
     });
 

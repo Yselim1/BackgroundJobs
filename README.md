@@ -229,7 +229,7 @@ Roles are intentionally narrow:
 | `operator` | Viewer access plus queueing jobs and cancelling executions |
 | `admin` | Operator access plus job definitions, attention remediation, users, roles, managed secrets, and audit history |
 
-Job-definition writes remain admin-only because command, Python, script, and plugin executors are privileged code-execution capabilities. Passwords use native Argon2id, repeated failures produce a temporary account lock, password resets revoke sessions and API tokens, disabled users lose active access, and the final active administrator cannot be disabled or demoted.
+Job-definition writes remain admin-only because command, Python, script, and plugin executors are privileged code-execution capabilities. Passwords use native Argon2id, repeated failures produce a temporary account lock, administrator-created/reset passwords must be replaced before application access, resets revoke sessions and API tokens, disabled users lose active access, and the final active administrator cannot be disabled or demoted.
 
 Security endpoints:
 
@@ -240,7 +240,15 @@ Security endpoints:
 | `POST` | `/api/auth/password` | Change password and revoke existing access |
 | `GET/POST/DELETE` | `/api/auth/tokens` | Manage the current user's API tokens |
 | `GET/POST/PATCH` | `/api/security/users` | Administer users, roles, and status |
-| `GET/PUT/DELETE` | `/api/security/secrets` | List metadata, store/rotate, or delete secrets |
+| `GET` | `/api/security/roles` | Read the authoritative role/permission matrix |
+| `GET` | `/api/security/users/:id/access` | Inspect a user's session and API-token metadata |
+| `POST` | `/api/security/users/:id/revoke-access` | Revoke all sessions and active API tokens for a user |
+| `DELETE` | `/api/security/users/:id/sessions/:sessionId` | Revoke one browser session |
+| `DELETE` | `/api/security/users/:id/tokens/:tokenId` | Revoke one API token |
+| `POST` | `/api/security/users/:id/unlock` | Clear an automatic failed-login lockout |
+| `GET/PUT/DELETE` | `/api/security/secrets` | List metadata, store/rotate, or dependency-safe delete secrets |
+| `GET` | `/api/security/secrets/:name/usage` | Inspect current job and webhook-signing references |
+| `GET` | `/api/security/system` | Read safe runtime, database, service, and retention status |
 | `GET` | `/api/security/audit` | Filter cursor-paginated immutable audit history |
 
 Operational attention endpoints:
@@ -264,6 +272,10 @@ Managed secrets are encrypted with AES-256-GCM. Generate a master key outside th
 node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
 $env:SECRETS_MASTER_KEY='paste-the-generated-value'
 ```
+
+For local development, store the same value in the ignored root `.env` as `SECRETS_MASTER_KEY=...`; `npm run dev` loads that file automatically. Never commit `.env`, and retain a secure backup because existing encrypted values cannot be recovered with a replacement key.
+
+Secret values remain write-only. Metadata includes an assignable owner, latest rotation actor, and optional advisory expiry. New and rotated secrets default to 90 days, due-soon warnings begin 14 days before expiry, and expiry never blocks runtime resolution. Deleting a referenced secret requires an explicit force confirmation after the server rechecks current job definitions.
 
 Job definitions reference names rather than values:
 

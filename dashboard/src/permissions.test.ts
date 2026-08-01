@@ -12,6 +12,7 @@ describe('permission-aware navigation', () => {
 
     it('shows Administration for either management permission', () => {
         expect(dashboardNavigation(['secrets:manage']).administration).toBe(true);
+        expect(dashboardNavigation(['system:read']).administration).toBe(true);
         expect(dashboardNavigation(['users:manage', 'audit:read'])).toMatchObject({
             administration: true,
             audit: true

@@ -92,6 +92,18 @@ export function requireAuthentication(req: Request, _res: Response, next: NextFu
     next();
 }
 
+export function requirePasswordChangeComplete(req: Request, _res: Response, next: NextFunction): void {
+    if (req.auth?.passwordChangeRequired === true) {
+        next(new AppError(
+            'PASSWORD_CHANGE_REQUIRED',
+            'You must change your temporary password before using the application.',
+            403
+        ));
+        return;
+    }
+    next();
+}
+
 export function requirePermission(permission: Permission): RequestHandler {
     return (req, _res, next) => {
         if (req.auth === undefined) {
@@ -214,6 +226,10 @@ function describeMutation(req: Request): {
         [/^\/api\/auth\/tokens\/([^/]+)$/u, 'api_token.revoke', 'api_token'],
         [/^\/api\/auth\/tokens$/u, 'api_token.create', 'api_token'],
         [/^\/api\/security\/users\/([^/]+)\/password$/u, 'user.password_reset', 'user'],
+        [/^\/api\/security\/users\/([^/]+)\/unlock$/u, 'user.unlock', 'user'],
+        [/^\/api\/security\/users\/([^/]+)\/revoke-access$/u, 'user.access_revoke', 'user'],
+        [/^\/api\/security\/users\/([^/]+)\/sessions\/[^/]+$/u, 'user.session_revoke', 'user'],
+        [/^\/api\/security\/users\/([^/]+)\/tokens\/[^/]+$/u, 'user.token_revoke', 'user'],
         [/^\/api\/security\/users\/([^/]+)$/u, 'user.update', 'user'],
         [/^\/api\/security\/users$/u, 'user.create', 'user'],
         [/^\/api\/security\/secrets\/([^/]+)$/u, req.method === 'DELETE' ? 'secret.delete' : 'secret.upsert', 'secret']

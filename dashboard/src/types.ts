@@ -9,6 +9,7 @@ export interface AuthSession {
         role: SecurityRole;
     };
     authType: 'session' | 'api_token';
+    passwordChangeRequired: boolean;
     permissions: string[];
 }
 
@@ -18,8 +19,42 @@ export interface SecurityUser {
     displayName: string;
     role: SecurityRole;
     status: 'active' | 'disabled';
+    failedLoginAttempts: number;
+    lockedUntil: string | null;
+    passwordChangeRequired: boolean;
     lastLoginAt: string | null;
+    passwordChangedAt: string;
     createdAt: string;
+    updatedAt: string;
+}
+
+export interface RoleSummary {
+    role: SecurityRole;
+    permissions: string[];
+}
+
+export interface AdminSessionSummary {
+    sessionId: string;
+    expiresAt: string;
+    idleExpiresAt: string;
+    lastSeenAt: string;
+    ipAddress: string | null;
+    userAgent: string | null;
+    createdAt: string;
+}
+
+export interface ApiTokenSummary {
+    tokenId: string;
+    name: string;
+    expiresAt: string | null;
+    lastUsedAt: string | null;
+    revokedAt: string | null;
+    createdAt: string;
+}
+
+export interface UserAccessSummary {
+    sessions: AdminSessionSummary[];
+    tokens: ApiTokenSummary[];
 }
 
 export type AttentionKind = 'execution_failure' | 'webhook_failure';
@@ -58,7 +93,32 @@ export interface ManagedSecret {
     name: string;
     description: string | null;
     keyVersion: number;
+    owner: { userId: string; displayName: string; email: string } | null;
+    lastRotatedBy: { userId: string; displayName: string; email: string } | null;
+    expiresOn: string | null;
+    createdAt: string;
     updatedAt: string;
+}
+
+export interface SecretUsage {
+    jobId: string;
+    jobName: string;
+    jobStatus: 'active' | 'inactive';
+    references: Array<{
+        kind: 'runtime_template' | 'webhook_signing';
+        path: string;
+    }>;
+}
+
+export interface SystemStatus {
+    generatedAt: string;
+    services: { executionManager: 'online' | 'offline'; webhookDispatcher: 'online' | 'offline' };
+    database: { status: 'online'; latencyMs: number; schemaVersion: number; expectedSchemaVersion: number };
+    workers: { concurrency: number; schedulerPollMs: number; shutdownGraceMs: number; databasePoolMax: number };
+    webhooks: { concurrency: number; pollMs: number; maxAttempts: number; requestTimeoutMs: number; legacySigningKeyConfigured: boolean };
+    authentication: { sessionTtlMs: number; sessionIdleMs: number; secureCookies: boolean; trustProxy: boolean };
+    secrets: { configured: boolean };
+    retention: { mode: 'manual'; dryRunCommand: string; confirmCommand: string };
 }
 
 export interface AuditEvent {
@@ -90,7 +150,10 @@ export interface AuditFilters {
     action?: string;
     actorType?: AuditEvent['actorType'];
     actorLabel?: string;
+    actorUserId?: string;
     resource?: string;
+    resourceType?: string;
+    resourceId?: string;
     outcome?: AuditEvent['outcome'];
     from?: string;
     to?: string;

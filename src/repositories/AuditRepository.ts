@@ -45,6 +45,8 @@ export interface AuditListOptions {
     actorType?: AuditActorType;
     actorLabel?: string;
     resource?: string;
+    resourceType?: string;
+    resourceId?: string;
     outcome?: 'success' | 'failure';
     from?: Date;
     to?: Date;
@@ -187,6 +189,12 @@ function buildAuditQuery(options: AuditListOptions): { predicates: string[]; par
             index => `strpos(lower(coalesce(resource_type, '') || ' ' || coalesce(resource_id, '')), lower($${index})) > 0`,
             options.resource
         );
+    }
+    if (options.resourceType !== undefined) {
+        add(index => `resource_type = $${index}`, options.resourceType);
+    }
+    if (options.resourceId !== undefined) {
+        add(index => `resource_id = $${index}`, options.resourceId);
     }
     if (options.outcome !== undefined) {
         add(index => `outcome = $${index}`, options.outcome);

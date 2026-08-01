@@ -17,6 +17,7 @@ import {
     protectCsrf,
     requestSecurity,
     requireAuthentication,
+    requirePasswordChangeComplete,
     requirePermission
 } from './security/middleware.js';
 import type { SecurityRuntime } from './security/runtime.js';
@@ -58,6 +59,7 @@ export function createApp(dependencies: AppDependencies): express.Express {
     app.use('/api', protectCsrf);
     app.use('/api/auth', createAuthController(dependencies.security.auth, dependencies.security.config));
     app.use('/api', requireAuthentication);
+    app.use('/api', requirePasswordChangeComplete);
     app.use('/api/jobs', createJobsController(dependencies.jobs));
     app.use('/api/executions', createExecutionsController(dependencies.executions, dependencies.manager));
     app.use('/api/logs', requirePermission('executions:read'), createLogsController(dependencies.executions));
@@ -73,7 +75,13 @@ export function createApp(dependencies: AppDependencies): express.Express {
     app.use('/api/security', createSecurityController(
         dependencies.security.auth,
         dependencies.security.secrets,
-        dependencies.security.audit
+        dependencies.security.audit,
+        {
+            pool: dependencies.pool,
+            config: dependencies.security.config,
+            manager: dependencies.manager,
+            webhookDispatcher: dependencies.webhookDispatcher
+        }
     ));
     app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
         if (error instanceof JobValidationError) {

@@ -38,6 +38,7 @@ export interface AuthenticatedActor {
     role: SecurityRole;
     authType: AuthenticationType;
     credentialId: string;
+    passwordChangeRequired: boolean;
 }
 export interface ActorSummary { type: 'system' | 'user' | 'api_token'; userId: string | null; label: string; }
 export interface SecurityUser {
@@ -46,10 +47,22 @@ export interface SecurityUser {
     displayName: string;
     role: SecurityRole;
     status: SecurityUserStatus;
+    failedLoginAttempts: number;
+    lockedUntil: string | null;
+    passwordChangeRequired: boolean;
     lastLoginAt: string | null;
     passwordChangedAt: string;
     createdAt: string;
     updatedAt: string;
+}
+export interface AdminSessionSummary {
+    sessionId: string;
+    expiresAt: string;
+    idleExpiresAt: string;
+    lastSeenAt: string;
+    ipAddress: string | null;
+    userAgent: string | null;
+    createdAt: string;
 }
 export interface ApiTokenSummary {
     tokenId: string;
@@ -59,13 +72,35 @@ export interface ApiTokenSummary {
     revokedAt: string | null;
     createdAt: string;
 }
+export interface UserAccessSummary {
+    sessions: AdminSessionSummary[];
+    tokens: ApiTokenSummary[];
+}
+export interface ManagedSecretUserSummary {
+    userId: string;
+    displayName: string;
+    email: string;
+}
 export interface ManagedSecretMetadata {
     secretId: string;
     name: string;
     description: string | null;
     keyVersion: number;
+    owner: ManagedSecretUserSummary | null;
+    lastRotatedBy: ManagedSecretUserSummary | null;
+    expiresOn: string | null;
     createdAt: string;
     updatedAt: string;
+}
+export interface SecretUsageReference {
+    kind: 'runtime_template' | 'webhook_signing';
+    path: string;
+}
+export interface SecretUsage {
+    jobId: string;
+    jobName: string;
+    jobStatus: JobStatus;
+    references: SecretUsageReference[];
 }
 export interface AuditEvent {
     auditId: string;

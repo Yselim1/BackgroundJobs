@@ -838,6 +838,7 @@ td small { display: block; color: var(--muted-secondary); margin-top: 5px; font-
 .auth-intro { color: var(--muted); font-size: 14px; line-height: 1.6; }
 .auth-form { display: grid; gap: 15px; margin-top: 28px; }
 .auth-form label { display: grid; gap: 7px; color: var(--muted); font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .08em; }
+.auth-form label small, .drawer-form label small { color: var(--muted-secondary); font-size: 10px; font-weight: 400; line-height: 1.5; text-transform: none; letter-spacing: 0; }
 .auth-form input, .drawer-form input, .drawer-form select, .drawer-form textarea,
 .attention-filters input, .attention-filters select, .page-size-row select, .search-control input {
     min-width: 0;
@@ -930,8 +931,12 @@ td small { display: block; color: var(--muted-secondary); margin-top: 5px; font-
 .button-danger { border-color: #81474a; color: #ff979b; }
 .configuration-warning { margin: 16px 20px; padding: 13px 15px; border-left: 3px solid var(--yellow); color: #ddce99; background: #302d1c; font-size: 12px; }
 .configuration-warning code { color: #f0dea2; }
+.configuration-error { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .admin-secret-list { margin: 20px; }
 .admin-secret-list article { grid-template-columns: minmax(0, 1fr) auto auto; }
+.admin-panel td > small { display: block; margin-top: 4px; color: var(--muted-secondary); font-size: 10px; }
+.secret-lifecycle { gap: 5px; align-items: flex-start; }
+.secret-lifecycle .status { width: fit-content; }
 .empty-copy { margin: 0; padding: 30px; color: var(--muted); text-align: center; }
 .admin-drawer { width: min(620px, calc(100vw - 48px)); }
 .drawer-form { display: grid; gap: 15px; margin-top: 28px; }
@@ -941,6 +946,51 @@ td small { display: block; color: var(--muted-secondary); margin-top: 5px; font-
 .drawer-subsection { margin-top: 30px; padding-top: 22px; border-top: 1px solid var(--line); }
 .drawer-subsection h3 { margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: .08em; }
 .drawer-subsection > p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.subsection-heading { display: flex; justify-content: space-between; align-items: start; gap: 14px; }
+.subsection-heading h3 { margin-bottom: 6px; }
+.subsection-heading p { margin: 0; color: var(--muted); font-size: 11px; }
+.checkbox-control { display: flex !important; grid-template-columns: auto 1fr; align-items: center; }
+.checkbox-control input { width: 17px; height: 17px; padding: 0; }
+.audit-shortcuts { display: flex; flex-wrap: wrap; gap: 8px; }
+.audit-shortcuts h3 { width: 100%; }
+.lockout-card { padding: 16px; border: 1px solid #674b33; background: #2d281e; }
+.credential-inventory { display: grid; gap: 8px; margin-top: 18px; }
+.credential-inventory h4 { margin: 14px 0 0; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.credential-inventory article { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 11px 0; border-top: 1px solid var(--line); }
+.credential-inventory article > div { min-width: 0; }
+.credential-inventory strong, .credential-inventory small { display: block; overflow-wrap: anywhere; }
+.credential-inventory strong { font-size: 12px; }
+.credential-inventory small { margin-top: 4px; color: var(--muted); font-size: 10px; }
+.credential-inventory .empty-copy { padding: 12px 0; text-align: left; }
+.role-matrix th:not(:first-child), .role-matrix td:not(:first-child) { width: 120px; text-align: center; }
+.role-matrix td:not(:first-child) { color: var(--teal); font-weight: 800; }
+.secret-usage article { padding: 12px 0; border-top: 1px solid var(--line); }
+.secret-usage article > div strong, .secret-usage article > div small { display: block; }
+.secret-usage article > div small { margin-top: 4px; color: var(--muted); font-size: 10px; }
+.secret-usage ul { display: grid; gap: 5px; padding: 0; margin: 10px 0 0; list-style: none; }
+.secret-usage li { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px; font-size: 10px; }
+.secret-usage li span { color: var(--muted); }
+.secret-usage li code { overflow-wrap: anywhere; }
+.status-current i, .status-online i, .status-configured i { background: var(--teal); }
+.status-due_soon i { background: var(--yellow); }
+.status-overdue i, .status-unconfigured i, .status-offline i { background: var(--red); }
+.status-none i, .status-loading i { background: #7c847f; }
+.system-admin { display: grid; gap: 22px; }
+.system-status-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--line); }
+.system-status-grid article { min-width: 0; padding: 20px; border-right: 1px solid var(--line); }
+.system-status-grid article:last-child { border-right: 0; }
+.system-status-grid span, .system-status-grid small { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .07em; }
+.system-status-grid strong { display: block; margin: 8px 0; font-size: 19px; }
+.system-generated { display: block; padding: 0 20px 16px; color: var(--muted-secondary); text-align: right; }
+.system-config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.config-panel { padding: 20px; }
+.config-panel h3 { margin: 5px 0 16px; font-size: 18px; }
+.config-panel dl { margin: 0; }
+.config-panel dl div { display: flex; justify-content: space-between; gap: 14px; padding: 9px 0; border-top: 1px solid var(--line); }
+.config-panel dt { color: var(--muted); font-size: 11px; }
+.config-panel dd { margin: 0; font-size: 12px; }
+.config-panel > p:not(.eyebrow) { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.config-panel > code { display: block; padding: 9px; margin-top: 8px; color: #c5d1ca; background: #111412; overflow-wrap: anywhere; }
 
 .attention-filters { display: grid; grid-template-columns: 1fr 2fr 1fr 1fr auto auto; gap: 10px; align-items: end; padding: 14px; border-bottom: 1px solid var(--line); }
 .attention-filters input, .attention-filters select { width: 100%; }
@@ -1003,6 +1053,9 @@ input[type='date'] { color-scheme: dark; }
     border-bottom: 0;
     background: var(--panel);
 }
+.exact-filter-chips { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 14px 14px; border: 1px solid var(--line); border-top: 0; background: var(--panel); }
+.exact-filter-chips button { display: flex; align-items: center; gap: 7px; padding: 7px 9px; border: 1px solid #52605a; color: var(--paper); background: #1d2925; cursor: pointer; }
+.exact-filter-chips code { max-width: 260px; overflow: hidden; color: var(--teal); text-overflow: ellipsis; }
 .audit-export-actions { display: flex; gap: 8px; }
 .audit-panel td small { display: block; max-width: 250px; margin-top: 4px; color: var(--muted-secondary); overflow: hidden; text-overflow: ellipsis; }
 .audit-panel .row-link { color: var(--paper); }
@@ -1040,6 +1093,8 @@ input[type='date'] { color-scheme: dark; }
     .editor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .logs-filters { grid-template-columns: repeat(3, 1fr); }
     .audit-filters { grid-template-columns: repeat(2, 1fr); }
+    .system-status-grid { grid-template-columns: repeat(2, 1fr); }
+    .system-status-grid article:nth-child(2) { border-right: 0; }
     .attention-filters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .attention-list > button { grid-template-columns: minmax(130px, .8fr) minmax(160px, 1.2fr); }
     .attention-list time { grid-column: 2; }
@@ -1113,6 +1168,9 @@ input[type='date'] { color-scheme: dark; }
     .step-section-heading .button { grid-column: 2; justify-self: start; }
     .job-editor-actions { padding: 13px 20px; }
     .operations-strip, .logs-filters, .audit-filters, .attention-filters, .job-detail-stats { grid-template-columns: 1fr; }
+    .system-config-grid, .system-status-grid { grid-template-columns: 1fr; }
+    .system-status-grid article { border-right: 0; border-bottom: 1px solid var(--line); }
+    .configuration-error, .subsection-heading { align-items: stretch; flex-direction: column; }
     .attention-columns { grid-template-columns: 1fr; }
     .attention-columns > div + div { border-top: 1px solid var(--line); border-left: 0; }
     .attention-list > button { grid-template-columns: 1fr; }

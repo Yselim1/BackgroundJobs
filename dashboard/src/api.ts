@@ -12,11 +12,15 @@ import type {
     Job,
     JobDefinition,
     JobPlan,
+    RoleSummary,
     ManagedSecret,
     PageResponse,
     PlatformOverview,
     SecurityRole,
     SecurityUser,
+    SecretUsage,
+    SystemStatus,
+    UserAccessSummary,
     ValidationIssue,
     WebhookDelivery
 } from './types';
@@ -44,8 +48,21 @@ export async function logout(): Promise<void> {
     await request('/api/auth/logout', { method: 'POST' });
 }
 
+export async function changeOwnPassword(currentPassword: string, newPassword: string): Promise<void> {
+    await request('/api/auth/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword, newPassword })
+    });
+}
+
 export async function getSecurityUsers(): Promise<SecurityUser[]> {
     const result = await request<{ items: SecurityUser[] }>('/api/security/users');
+    return result.items;
+}
+
+export async function getSecurityRoles(): Promise<RoleSummary[]> {
+    const result = await request<{ items: RoleSummary[] }>('/api/security/roles');
     return result.items;
 }
 
@@ -81,20 +98,55 @@ export async function resetSecurityUserPassword(userId: string, password: string
     });
 }
 
+export async function getSecurityUserAccess(userId: string): Promise<UserAccessSummary> {
+    return request('/api/security/users/' + encodeURIComponent(userId) + '/access');
+}
+
+export async function unlockSecurityUser(userId: string): Promise<SecurityUser> {
+    return request('/api/security/users/' + encodeURIComponent(userId) + '/unlock', { method: 'POST' });
+}
+
+export async function revokeSecurityUserAccess(userId: string): Promise<{ sessionsRevoked: number; tokensRevoked: number }> {
+    return request('/api/security/users/' + encodeURIComponent(userId) + '/revoke-access', { method: 'POST' });
+}
+
+export async function revokeSecurityUserSession(userId: string, sessionId: string): Promise<void> {
+    await request('/api/security/users/' + encodeURIComponent(userId) + '/sessions/' + encodeURIComponent(sessionId), { method: 'DELETE' });
+}
+
+export async function revokeSecurityUserToken(userId: string, tokenId: string): Promise<void> {
+    await request('/api/security/users/' + encodeURIComponent(userId) + '/tokens/' + encodeURIComponent(tokenId), { method: 'DELETE' });
+}
+
 export async function getManagedSecrets(): Promise<{ configured: boolean; items: ManagedSecret[] }> {
     return request('/api/security/secrets');
 }
 
-export async function putManagedSecret(name: string, value: string, description: string): Promise<ManagedSecret> {
+export async function putManagedSecret(
+    name: string,
+    value: string,
+    description: string,
+    ownerUserId: string | null,
+    expiresOn: string | null
+): Promise<ManagedSecret> {
     return request('/api/security/secrets/' + encodeURIComponent(name), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value, description })
+        body: JSON.stringify({ value, description, ownerUserId, expiresOn })
     });
 }
 
-export async function deleteManagedSecret(name: string): Promise<void> {
-    await request('/api/security/secrets/' + encodeURIComponent(name), { method: 'DELETE' });
+export async function getManagedSecretUsage(name: string): Promise<SecretUsage[]> {
+    const result = await request<{ items: SecretUsage[] }>('/api/security/secrets/' + encodeURIComponent(name) + '/usage');
+    return result.items;
+}
+
+export async function deleteManagedSecret(name: string, force = false): Promise<void> {
+    await request('/api/security/secrets/' + encodeURIComponent(name) + (force ? '?force=true' : ''), { method: 'DELETE' });
+}
+
+export async function getSystemStatus(): Promise<SystemStatus> {
+    return request('/api/security/system');
 }
 
 export async function getAttention(filters: AttentionFilters): Promise<PageResponse<AttentionItem>> {
@@ -285,7 +337,10 @@ function auditQuery(filters: AuditFilters): URLSearchParams {
     if (filters.action !== undefined) query.set('action', filters.action);
     if (filters.actorType !== undefined) query.set('actorType', filters.actorType);
     if (filters.actorLabel !== undefined) query.set('actorLabel', filters.actorLabel);
+    if (filters.actorUserId !== undefined) query.set('actorUserId', filters.actorUserId);
     if (filters.resource !== undefined) query.set('resource', filters.resource);
+    if (filters.resourceType !== undefined) query.set('resourceType', filters.resourceType);
+    if (filters.resourceId !== undefined) query.set('resourceId', filters.resourceId);
     if (filters.outcome !== undefined) query.set('outcome', filters.outcome);
     if (filters.from !== undefined) query.set('from', filters.from);
     if (filters.to !== undefined) query.set('to', filters.to);

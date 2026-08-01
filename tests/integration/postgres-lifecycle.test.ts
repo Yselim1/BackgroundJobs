@@ -50,7 +50,8 @@ beforeAll(async () => {
         displayName: admin.displayName,
         role: admin.role,
         authType: 'session',
-        credentialId: 'integration-bootstrap'
+        credentialId: 'integration-bootstrap',
+        passwordChangeRequired: false
     }, { name: 'integration-suite' })).token;
 });
 
@@ -145,6 +146,51 @@ describe('PostgreSQL repositories and lifecycle', () => {
             expect((await client.query<{ count: string }>(
                 'SELECT count(*)::text AS count FROM operational_attention_items'
             )).rows[0]?.count).toBe('0');
+        } finally {
+            await client.query('SET search_path TO public').catch(() => undefined);
+            await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => undefined);
+            client.release();
+        }
+    });
+
+    it('adds administration lifecycle columns, backfills secret owners, and creates expiry indexes', async () => {
+        const schema = 'administration_migration_' + randomUUID().replaceAll('-', '');
+        const client = await pool.connect();
+        try {
+            await client.query(`CREATE SCHEMA "${schema}"`);
+            await client.query(`SET search_path TO "${schema}"`);
+            const migrations = await readMigrations();
+            for (const migration of migrations.filter(item => item.version < 6)) await client.query(migration.sql);
+            const userId = randomUUID();
+            await client.query(
+                `INSERT INTO security_users(id, email, display_name, password_hash, role)
+                 VALUES ($1, 'owner@example.test', 'Secret Owner', 'hash', 'admin')`,
+                [userId]
+            );
+            await client.query(
+                `INSERT INTO managed_secrets(
+                    id, name, encrypted_value, nonce, auth_tag, created_by_user_id
+                 ) VALUES ($1, 'MIGRATION_SECRET', decode('aa', 'hex'), decode('bb', 'hex'), decode('cc', 'hex'), $2)`,
+                [randomUUID(), userId]
+            );
+            await client.query(migrations.find(item => item.version === 6)!.sql);
+            const user = await client.query<{ password_change_required: boolean }>(
+                'SELECT password_change_required FROM security_users WHERE id = $1',
+                [userId]
+            );
+            expect(user.rows[0]?.password_change_required).toBe(false);
+            const secret = await client.query<{ owner_user_id: string; expires_on: string | null; last_rotated_by_user_id: string | null }>(
+                'SELECT owner_user_id, expires_on, last_rotated_by_user_id FROM managed_secrets WHERE name = $1',
+                ['MIGRATION_SECRET']
+            );
+            expect(secret.rows[0]).toMatchObject({ owner_user_id: userId, expires_on: null, last_rotated_by_user_id: null });
+            const indexes = await client.query<{ indexname: string }>(
+                `SELECT indexname FROM pg_indexes WHERE schemaname = $1 AND tablename = 'managed_secrets'`,
+                [schema]
+            );
+            expect(indexes.rows.map(item => item.indexname)).toEqual(expect.arrayContaining([
+                'managed_secrets_owner_idx', 'managed_secrets_expiry_idx'
+            ]));
         } finally {
             await client.query('SET search_path TO public').catch(() => undefined);
             await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => undefined);
@@ -1042,6 +1088,95 @@ describe('Security and authentication lifecycle', () => {
         await browser.get('/api/auth/me').expect(401);
     });
 
+    it('requires administrator-created users to replace temporary passwords before application access', async () => {
+        const suffix = Date.now().toString();
+        const email = 'temporary-' + suffix + '@integration.test';
+        const temporaryPassword = 'temporary-password-12345';
+        const permanentPassword = 'permanent-password-67890';
+        await security.auth.createUser({ email, displayName: 'Temporary User', password: temporaryPassword, role: 'viewer' });
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000, security.secrets);
+        const app = createApp({ pool, jobs: new JobService(jobs, executions), executions, manager, security });
+        const browser = request.agent(app);
+        const loginResponse = await browser.post('/api/auth/login').send({ email, password: temporaryPassword }).expect(200);
+        expect(loginResponse.body.passwordChangeRequired).toBe(true);
+        const csrfToken = loginResponse.body.csrfToken as string;
+        await browser.get('/api/auth/me').expect(200).expect(response => expect(response.body.passwordChangeRequired).toBe(true));
+        await browser.get('/api/jobs').expect(403).expect(response => expect(response.body.code).toBe('PASSWORD_CHANGE_REQUIRED'));
+        await browser.get('/api/auth/tokens').expect(403).expect(response => expect(response.body.code).toBe('PASSWORD_CHANGE_REQUIRED'));
+        await browser.post('/api/auth/password').set('X-CSRF-Token', csrfToken)
+            .send({ currentPassword: temporaryPassword, newPassword: permanentPassword })
+            .expect(204);
+        await browser.get('/api/auth/me').expect(401);
+        const permanentLogin = await browser.post('/api/auth/login').send({ email, password: permanentPassword }).expect(200);
+        expect(permanentLogin.body.passwordChangeRequired).toBe(false);
+        await browser.get('/api/jobs').expect(200);
+    });
+
+    it('lists and revokes user credentials, exposes lockouts, unlocks users, and audits administrator actions', async () => {
+        const suffix = Date.now().toString();
+        const email = 'access-' + suffix + '@integration.test';
+        const password = 'access-user-password-12345';
+        const user = await security.auth.createUser({ email, displayName: 'Access User', password, role: 'operator' }, false);
+        const token = await security.auth.createApiToken({
+            userId: user.userId,
+            email: user.email,
+            displayName: user.displayName,
+            role: user.role,
+            authType: 'session',
+            credentialId: 'access-fixture',
+            passwordChangeRequired: false
+        }, { name: 'access-token' });
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000, security.secrets);
+        const app = createApp({ pool, jobs: new JobService(jobs, executions), executions, manager, security });
+        const browser = request.agent(app);
+        await browser.post('/api/auth/login').send({ email, password }).expect(200);
+        for (let attempt = 0; attempt < 5; attempt++) {
+            await request(app).post('/api/auth/login').send({ email, password: 'incorrect-password-value' }).expect(401);
+        }
+        const users = await authenticatedRequest(app).get('/api/security/users').expect(200);
+        expect(users.body.items.find((item: { userId: string }) => item.userId === user.userId)).toMatchObject({
+            failedLoginAttempts: 5,
+            passwordChangeRequired: false
+        });
+        expect(users.body.items.find((item: { userId: string }) => item.userId === user.userId).lockedUntil).toBeTypeOf('string');
+        await authenticatedRequest(app).post('/api/security/users/' + user.userId + '/unlock').expect(200)
+            .expect(response => expect(response.body.lockedUntil).toBeNull());
+        await request(app).post('/api/auth/login').send({ email, password }).expect(200);
+
+        const access = await authenticatedRequest(app).get('/api/security/users/' + user.userId + '/access').expect(200);
+        expect(access.body.sessions.length).toBeGreaterThanOrEqual(2);
+        expect(access.body.tokens).toEqual(expect.arrayContaining([expect.objectContaining({ tokenId: token.item.tokenId, name: 'access-token' })]));
+        await authenticatedRequest(app)
+            .delete('/api/security/users/' + user.userId + '/sessions/' + access.body.sessions[0].sessionId)
+            .expect(204);
+        await authenticatedRequest(app)
+            .delete('/api/security/users/' + user.userId + '/tokens/' + token.item.tokenId)
+            .expect(204);
+        const revoked = await authenticatedRequest(app).post('/api/security/users/' + user.userId + '/revoke-access').expect(200);
+        expect(revoked.body.sessionsRevoked).toBeGreaterThanOrEqual(1);
+        const finalAccess = await authenticatedRequest(app).get('/api/security/users/' + user.userId + '/access').expect(200);
+        expect(finalAccess.body.sessions).toEqual([]);
+        expect(finalAccess.body.tokens[0].revokedAt).toBeTypeOf('string');
+        await waitFor(async () => (await security.audit.list({ limit: 50, action: 'user.access_revoke' })).items.length > 0);
+    });
+
+    it('publishes the role matrix and safe read-only system status to administrators only', async () => {
+        const manager = new JobExecutionManager(executions, undefined, 3, 750, security.secrets);
+        const app = createApp({ pool, jobs: new JobService(jobs, executions), executions, manager, security });
+        await authenticatedRequest(app).get('/api/security/roles').expect(200).expect(response => {
+            expect(response.body.items.map((item: { role: string }) => item.role)).toEqual(['viewer', 'operator', 'admin']);
+            expect(response.body.items.find((item: { role: string }) => item.role === 'admin').permissions).toContain('system:read');
+        });
+        await authenticatedRequest(app).get('/api/security/system').expect(200).expect(response => {
+            expect(response.body.workers.concurrency).toBe(3);
+            expect(response.body.database.schemaVersion).toBe(response.body.database.expectedSchemaVersion);
+            expect(response.body.retention.mode).toBe('manual');
+            expect(response.body.secrets.configured).toBe(true);
+            expect(JSON.stringify(response.body)).not.toContain('postgres://');
+            expect(JSON.stringify(response.body)).not.toContain(Buffer.alloc(32, 7).toString('base64'));
+        });
+    });
+
     it('enforces viewer/operator/admin permissions and persists execution actors', async () => {
         const suffix = Date.now().toString();
         const viewer = await security.auth.createUser({
@@ -1049,20 +1184,21 @@ describe('Security and authentication lifecycle', () => {
             displayName: 'Viewer',
             password: 'viewer-password-12345',
             role: 'viewer'
-        });
+        }, false);
         const operator = await security.auth.createUser({
             email: 'operator-' + suffix + '@integration.test',
             displayName: 'Operator',
             password: 'operator-password-12345',
             role: 'operator'
-        });
+        }, false);
         const viewerToken = (await security.auth.createApiToken({
             userId: viewer.userId,
             email: viewer.email,
             displayName: viewer.displayName,
             role: viewer.role,
             authType: 'session',
-            credentialId: 'test-viewer'
+            credentialId: 'test-viewer',
+            passwordChangeRequired: false
         }, { name: 'viewer-token' })).token;
         const operatorToken = (await security.auth.createApiToken({
             userId: operator.userId,
@@ -1070,7 +1206,8 @@ describe('Security and authentication lifecycle', () => {
             displayName: operator.displayName,
             role: operator.role,
             authType: 'session',
-            credentialId: 'test-operator'
+            credentialId: 'test-operator',
+            passwordChangeRequired: false
         }, { name: 'operator-token' })).token;
         await jobs.create(job('rbac-job', 'inactive'));
         const manager = new JobExecutionManager(executions, undefined, 1, 1000, security.secrets);
@@ -1090,6 +1227,8 @@ describe('Security and authentication lifecycle', () => {
         await viewerApi.get('/api/security/audit?page=1&limit=25').expect(403);
         await viewerApi.get('/api/security/audit/export?format=json').expect(403);
         await viewerApi.get('/api/security/audit/1').expect(403);
+        await viewerApi.get('/api/security/roles').expect(403);
+        await viewerApi.get('/api/security/system').expect(403);
         await viewerApi.post('/api/jobs/rbac-job/run').expect(403);
         await operatorApi.post('/api/jobs').send(job('operator-cannot-write')).expect(403);
         const run = await operatorApi.post('/api/jobs/rbac-job/run').expect(202);
@@ -1198,6 +1337,53 @@ describe('Security and authentication lifecycle', () => {
             await manager.shutdown(1_000);
             await new Promise<void>(resolve => target.close(() => resolve()));
         }
+    });
+
+    it('tracks secret lifecycle ownership and exact job usage, then requires explicit force deletion', async () => {
+        const name = 'LIFECYCLE_SECRET_' + Date.now();
+        const definition = job('secret-usage-' + Date.now(), 'inactive');
+        definition.STEPS[0]!.STEP_PARAMS = { TOKEN: `{{secrets.${name}}}` };
+        definition.WEBHOOKS = [{ URL: 'https://example.test/hook', SIGNING_SECRET: name }];
+        await jobs.create(definition);
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000, security.secrets);
+        const app = createApp({ pool, jobs: new JobService(jobs, executions), executions, manager, security });
+        const api = authenticatedRequest(app);
+        const stored = await api.put('/api/security/secrets/' + name)
+            .send({ value: 'write-only-lifecycle-value', description: 'Lifecycle test', ownerUserId: adminUserId })
+            .expect(200);
+        expect(stored.body).toMatchObject({
+            name,
+            owner: { userId: adminUserId },
+            lastRotatedBy: { userId: adminUserId }
+        });
+        expect(stored.body.expiresOn).toBeTypeOf('string');
+        expect(JSON.stringify(stored.body)).not.toContain('write-only-lifecycle-value');
+        const usage = await api.get('/api/security/secrets/' + name + '/usage').expect(200);
+        expect(usage.body.items).toEqual([expect.objectContaining({
+            jobId: definition.id,
+            references: expect.arrayContaining([
+                expect.objectContaining({ kind: 'runtime_template' }),
+                expect.objectContaining({ kind: 'webhook_signing' })
+            ])
+        })]);
+        await api.delete('/api/security/secrets/' + name).expect(409)
+            .expect(response => {
+                expect(response.body.code).toBe('SECRET_IN_USE');
+                expect(response.body.details.usage[0].jobId).toBe(definition.id);
+            });
+        await pool.query(`UPDATE managed_secrets SET expires_on = current_date - 1 WHERE name = $1`, [name]);
+        await expect(security.secrets.resolve(name)).resolves.toBe('write-only-lifecycle-value');
+        await api.delete('/api/security/secrets/' + name + '?force=true').expect(204);
+        await waitFor(async () => {
+            const history = await security.audit.list({ limit: 50, resourceType: 'secret', resourceId: name });
+            return history.items.some(item => item.action === 'secret.delete');
+        });
+        await api.get('/api/security/audit?page=1&limit=25&resourceType=secret&resourceId=' + encodeURIComponent(name))
+            .expect(200)
+            .expect(response => {
+                expect(response.body.items.length).toBeGreaterThan(0);
+                expect(response.body.items.every((item: { resourceType: string; resourceId: string }) => item.resourceType === 'secret' && item.resourceId === name)).toBe(true);
+            });
     });
 
     it('explores and exports filtered audit history with exact totals and full details', async () => {

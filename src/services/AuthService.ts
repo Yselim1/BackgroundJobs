@@ -1,13 +1,14 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { AppError } from '../errors.js';
 import { AuditRepository } from '../repositories/AuditRepository.js';
-import { SecurityRepository } from '../repositories/SecurityRepository.js';
+import { SecurityRepository, type UserCredential } from '../repositories/SecurityRepository.js';
 import type {
     ApiTokenSummary,
     AuthenticatedActor,
     SecurityRole,
     SecurityUser,
-    SecurityUserStatus
+    SecurityUserStatus,
+    UserAccessSummary
 } from '../types/index.js';
 import { assertPasswordPolicy, hashPassword, verifyPassword } from '../security/password.js';
 import { permissionsForRole } from '../security/permissions.js';
@@ -47,9 +48,9 @@ export class AuthService {
         const credential = email.length === 0 ? undefined : await this.security.getUserByEmail(email);
         const passwordHash = credential?.passwordHash ?? await this.dummyHash;
         const validPassword = await verifyPassword(password, passwordHash);
-        const locked = credential?.lockedUntil !== null &&
-            credential?.lockedUntil !== undefined &&
-            credential.lockedUntil.getTime() > Date.now();
+        const locked = credential?.lockedUntilDate !== null &&
+            credential?.lockedUntilDate !== undefined &&
+            credential.lockedUntilDate.getTime() > Date.now();
         const valid = credential !== undefined &&
             credential.status === 'active' &&
             !locked &&
@@ -93,7 +94,8 @@ export class AuthService {
             displayName: credential.displayName,
             role: credential.role,
             authType: 'session',
-            credentialId: sessionId
+            credentialId: sessionId,
+            passwordChangeRequired: credential.passwordChangeRequired
         };
         await this.audit.record({
             requestId: context.requestId,
@@ -133,11 +135,12 @@ export class AuthService {
                 role: actor.role
             },
             authType: actor.authType,
+            passwordChangeRequired: actor.passwordChangeRequired,
             permissions: permissionsForRole(actor.role)
         };
     }
 
-    async createUser(input: unknown): Promise<SecurityUser> {
+    async createUser(input: unknown, passwordChangeRequired = true): Promise<SecurityUser> {
         const record = requireRecord(input, 'User request body must be an object.');
         rejectUnsupported(record, new Set(['email', 'displayName', 'password', 'role']));
         const email = normalizeEmail(record.email);
@@ -149,7 +152,8 @@ export class AuthService {
                 email,
                 displayName,
                 role,
-                passwordHash: await hashPassword(record.password)
+                passwordHash: await hashPassword(record.password),
+                passwordChangeRequired
             });
         } catch (error: unknown) {
             if (isUniqueViolation(error)) {
@@ -163,7 +167,7 @@ export class AuthService {
         if ((await this.security.listUsers()).length > 0) {
             throw new AppError('BOOTSTRAP_NOT_ALLOWED', 'Bootstrap is allowed only when no users exist.', 409);
         }
-        return this.createUser({ email, displayName, password, role: 'admin' });
+        return this.createUser({ email, displayName, password, role: 'admin' }, false);
     }
 
     async listUsers(): Promise<SecurityUser[]> {
@@ -188,7 +192,7 @@ export class AuthService {
 
     async resetPassword(userId: string, password: unknown): Promise<void> {
         assertPasswordPolicy(password);
-        if (!(await this.security.setPassword(userId, await hashPassword(password)))) {
+        if (!(await this.security.setPassword(userId, await hashPassword(password), true))) {
             throw new AppError('USER_NOT_FOUND', 'User was not found.', 404);
         }
     }
@@ -231,6 +235,49 @@ export class AuthService {
         if (!(await this.security.revokeApiToken(actor.userId, tokenId))) {
             throw new AppError('API_TOKEN_NOT_FOUND', 'API token was not found or was already revoked.', 404);
         }
+    }
+
+    roles(): Array<{ role: SecurityRole; permissions: string[] }> {
+        return (['viewer', 'operator', 'admin'] as const).map(role => ({
+            role,
+            permissions: permissionsForRole(role)
+        }));
+    }
+
+    async getUserAccess(userId: string): Promise<UserAccessSummary> {
+        await this.requireUser(userId);
+        return this.security.listUserAccess(userId);
+    }
+
+    async unlockUser(userId: string): Promise<SecurityUser> {
+        await this.requireUser(userId);
+        await this.security.unlockUser(userId);
+        return (await this.security.getUserById(userId))!;
+    }
+
+    async revokeUserAccess(userId: string): Promise<{ sessionsRevoked: number; tokensRevoked: number }> {
+        await this.requireUser(userId);
+        return this.security.revokeUserAccess(userId);
+    }
+
+    async revokeUserSession(userId: string, sessionId: string): Promise<void> {
+        await this.requireUser(userId);
+        if (!(await this.security.revokeUserSession(userId, sessionId))) {
+            throw new AppError('SESSION_NOT_FOUND', 'Session was not found.', 404);
+        }
+    }
+
+    async revokeUserApiToken(userId: string, tokenId: string): Promise<void> {
+        await this.requireUser(userId);
+        if (!(await this.security.revokeApiToken(userId, tokenId))) {
+            throw new AppError('API_TOKEN_NOT_FOUND', 'API token was not found or was already revoked.', 404);
+        }
+    }
+
+    private async requireUser(userId: string): Promise<UserCredential> {
+        const user = await this.security.getUserById(userId);
+        if (user === undefined) throw new AppError('USER_NOT_FOUND', 'User was not found.', 404);
+        return user;
     }
 }
 

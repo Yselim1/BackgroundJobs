@@ -20,7 +20,10 @@ export function AuditPage(props: AuditPageProps) {
         (initial.get('actorType') as AuditEvent['actorType'] | null) ?? 'all'
     );
     const [actorLabel, setActorLabel] = useState(initial.get('actorLabel') ?? '');
+    const [actorUserId, setActorUserId] = useState(initial.get('actorUserId') ?? '');
     const [resource, setResource] = useState(initial.get('resource') ?? '');
+    const [resourceType, setResourceType] = useState(initial.get('resourceType') ?? '');
+    const [resourceId, setResourceId] = useState(initial.get('resourceId') ?? '');
     const [outcome, setOutcome] = useState<AuditEvent['outcome'] | 'all'>(
         (initial.get('outcome') as AuditEvent['outcome'] | null) ?? 'all'
     );
@@ -39,10 +42,13 @@ export function AuditPage(props: AuditPageProps) {
         ...(action.trim().length === 0 ? {} : { action: action.trim() }),
         ...(actorType === 'all' ? {} : { actorType }),
         ...(actorLabel.trim().length === 0 ? {} : { actorLabel: actorLabel.trim() }),
+        ...(actorUserId.length === 0 ? {} : { actorUserId }),
         ...(resource.trim().length === 0 ? {} : { resource: resource.trim() }),
+        ...(resourceType.length === 0 ? {} : { resourceType }),
+        ...(resourceId.length === 0 ? {} : { resourceId }),
         ...(outcome === 'all' ? {} : { outcome }),
         ...calendarRangeToApi(from, to)
-    }), [action, actorLabel, actorType, from, outcome, resource, to]);
+    }), [action, actorLabel, actorType, actorUserId, from, outcome, resource, resourceId, resourceType, to]);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -66,10 +72,10 @@ export function AuditPage(props: AuditPageProps) {
 
     useEffect(() => {
         setRouteQuery('/audit', {
-            action, actorType, actorLabel, resource, outcome, from, to,
+            action, actorType, actorLabel, actorUserId, resource, resourceType, resourceId, outcome, from, to,
             page: String(page), pageSize: String(pageSize)
         });
-    }, [action, actorLabel, actorType, from, outcome, page, pageSize, resource, to]);
+    }, [action, actorLabel, actorType, actorUserId, from, outcome, page, pageSize, resource, resourceId, resourceType, to]);
 
     useEffect(() => { void load(); }, [load, props.liveVersion]);
 
@@ -144,6 +150,12 @@ export function AuditPage(props: AuditPageProps) {
                 <Filter label="From"><input type="date" value={from} onChange={event => reset(() => setFrom(event.target.value))} /></Filter>
                 <Filter label="To"><input type="date" value={to} onChange={event => reset(() => setTo(event.target.value))} /></Filter>
             </div>
+            {(actorUserId.length > 0 || resourceType.length > 0 || resourceId.length > 0) && (
+                <div className='exact-filter-chips' aria-label='Exact audit filters'>
+                    {actorUserId.length > 0 && <button onClick={() => reset(() => setActorUserId(''))}>Activity by user <code>{actorUserId}</code><span aria-hidden='true'>×</span></button>}
+                    {(resourceType.length > 0 || resourceId.length > 0) && <button onClick={() => reset(() => { setResourceType(''); setResourceId(''); })}>Resource <code>{resourceType}:{resourceId}</code><span aria-hidden='true'>×</span></button>}
+                </div>
+            )}
             <div className="panel audit-panel table-wrap">
                 <table>
                     <thead><tr><th>Time</th><th>Action</th><th>Actor</th><th>Resource</th><th>Outcome</th><th>HTTP</th></tr></thead>

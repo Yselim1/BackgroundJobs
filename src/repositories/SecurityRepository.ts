@@ -3,11 +3,13 @@ import type { DatabasePool } from '../db/pool.js';
 import { withTransaction } from '../db/pool.js';
 import { AppError } from '../errors.js';
 import type {
+    AdminSessionSummary,
     ApiTokenSummary,
     AuthenticatedActor,
     SecurityRole,
     SecurityUser,
-    SecurityUserStatus
+    SecurityUserStatus,
+    UserAccessSummary
 } from '../types/index.js';
 
 interface UserRow {
@@ -21,6 +23,7 @@ interface UserRow {
     locked_until: Date | null;
     last_login_at: Date | null;
     password_changed_at: Date;
+    password_change_required: boolean;
     created_at: Date;
     updated_at: Date;
 }
@@ -43,10 +46,19 @@ interface ApiTokenRow {
     created_at: Date;
 }
 
+interface SessionRow {
+    id: string;
+    expires_at: Date;
+    idle_expires_at: Date;
+    last_seen_at: Date;
+    ip_address: string | null;
+    user_agent: string | null;
+    created_at: Date;
+}
+
 export interface UserCredential extends SecurityUser {
     passwordHash: string;
-    failedLoginAttempts: number;
-    lockedUntil: Date | null;
+    lockedUntilDate: Date | null;
 }
 
 export interface SessionAuthentication {
@@ -63,12 +75,17 @@ export class SecurityRepository {
         displayName: string;
         passwordHash: string;
         role: SecurityRole;
+        passwordChangeRequired?: boolean;
     }): Promise<SecurityUser> {
         const result = await this.pool.query<UserRow>(
-            `INSERT INTO security_users(id, email, display_name, password_hash, role)
-             VALUES ($1, $2, $3, $4, $5)
+            `INSERT INTO security_users(
+                id, email, display_name, password_hash, role, password_change_required
+             ) VALUES ($1, $2, $3, $4, $5, $6)
              RETURNING *`,
-            [randomUUID(), input.email, input.displayName, input.passwordHash, input.role]
+            [
+                randomUUID(), input.email, input.displayName, input.passwordHash,
+                input.role, input.passwordChangeRequired ?? false
+            ]
         );
         return mapUser(result.rows[0]!);
     }
@@ -140,15 +157,16 @@ export class SecurityRepository {
         });
     }
 
-    async setPassword(userId: string, passwordHash: string): Promise<boolean> {
+    async setPassword(userId: string, passwordHash: string, passwordChangeRequired = false): Promise<boolean> {
         return withTransaction(this.pool, async client => {
             const result = await client.query(
                 `UPDATE security_users
                  SET password_hash = $2, password_changed_at = clock_timestamp(),
+                     password_change_required = $3,
                      failed_login_attempts = 0, locked_until = NULL,
                      updated_at = clock_timestamp()
                  WHERE id = $1`,
-                [userId, passwordHash]
+                [userId, passwordHash, passwordChangeRequired]
             );
             if ((result.rowCount ?? 0) === 0) return false;
             await client.query('DELETE FROM security_sessions WHERE user_id = $1', [userId]);
@@ -238,14 +256,18 @@ export class SecurityRepository {
         await this.pool.query('DELETE FROM security_sessions WHERE id = $1', [sessionId]);
     }
 
-    async revokeUserAccess(userId: string): Promise<void> {
-        await withTransaction(this.pool, async client => {
-            await client.query('DELETE FROM security_sessions WHERE user_id = $1', [userId]);
-            await client.query(
+    async revokeUserAccess(userId: string): Promise<{ sessionsRevoked: number; tokensRevoked: number }> {
+        return withTransaction(this.pool, async client => {
+            const sessions = await client.query('DELETE FROM security_sessions WHERE user_id = $1', [userId]);
+            const tokens = await client.query(
                 `UPDATE security_api_tokens SET revoked_at = clock_timestamp()
                  WHERE user_id = $1 AND revoked_at IS NULL`,
                 [userId]
             );
+            return {
+                sessionsRevoked: sessions.rowCount ?? 0,
+                tokensRevoked: tokens.rowCount ?? 0
+            };
         });
     }
 
@@ -274,6 +296,7 @@ export class SecurityRepository {
                AND token.revoked_at IS NULL
                AND (token.expires_at IS NULL OR token.expires_at > clock_timestamp())
                AND security_user.status = 'active'
+               AND security_user.password_change_required = false
              RETURNING security_user.*, token.id AS token_id`,
             [tokenHash]
         );
@@ -299,14 +322,48 @@ export class SecurityRepository {
         );
         return (result.rowCount ?? 0) > 0;
     }
+
+    async listUserAccess(userId: string): Promise<UserAccessSummary> {
+        const [sessions, tokens] = await Promise.all([
+            this.pool.query<SessionRow>(
+                `SELECT id, expires_at, idle_expires_at, last_seen_at, ip_address, user_agent, created_at
+                 FROM security_sessions
+                 WHERE user_id = $1
+                 ORDER BY created_at DESC, id DESC`,
+                [userId]
+            ),
+            this.listApiTokens(userId)
+        ]);
+        return {
+            sessions: sessions.rows.map(mapSession),
+            tokens
+        };
+    }
+
+    async revokeUserSession(userId: string, sessionId: string): Promise<boolean> {
+        const result = await this.pool.query(
+            'DELETE FROM security_sessions WHERE id = $1 AND user_id = $2',
+            [sessionId, userId]
+        );
+        return (result.rowCount ?? 0) > 0;
+    }
+
+    async unlockUser(userId: string): Promise<boolean> {
+        const result = await this.pool.query(
+            `UPDATE security_users
+             SET failed_login_attempts = 0, locked_until = NULL, updated_at = clock_timestamp()
+             WHERE id = $1`,
+            [userId]
+        );
+        return (result.rowCount ?? 0) > 0;
+    }
 }
 
 function mapCredential(row: UserRow): UserCredential {
     return {
         ...mapUser(row),
         passwordHash: row.password_hash,
-        failedLoginAttempts: row.failed_login_attempts,
-        lockedUntil: row.locked_until
+        lockedUntilDate: row.locked_until
     };
 }
 
@@ -317,6 +374,9 @@ function mapUser(row: UserRow): SecurityUser {
         displayName: row.display_name,
         role: row.role,
         status: row.status,
+        failedLoginAttempts: row.failed_login_attempts,
+        lockedUntil: row.locked_until?.toISOString() ?? null,
+        passwordChangeRequired: row.password_change_required,
         lastLoginAt: row.last_login_at?.toISOString() ?? null,
         passwordChangedAt: row.password_changed_at.toISOString(),
         createdAt: row.created_at.toISOString(),
@@ -331,7 +391,20 @@ function mapActor(row: UserRow, authType: 'session' | 'api_token', credentialId:
         displayName: row.display_name,
         role: row.role,
         authType,
-        credentialId
+        credentialId,
+        passwordChangeRequired: row.password_change_required
+    };
+}
+
+function mapSession(row: SessionRow): AdminSessionSummary {
+    return {
+        sessionId: row.id,
+        expiresAt: row.expires_at.toISOString(),
+        idleExpiresAt: row.idle_expires_at.toISOString(),
+        lastSeenAt: row.last_seen_at.toISOString(),
+        ipAddress: row.ip_address,
+        userAgent: row.user_agent,
+        createdAt: row.created_at.toISOString()
     };
 }
 
