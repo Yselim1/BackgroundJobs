@@ -104,6 +104,7 @@ export interface ExecutionFilters {
     to?: Date;
     limit: number;
     cursor?: string;
+    order?: 'asc' | 'desc';
 }
 
 export class ExecutionRepository {
@@ -225,6 +226,7 @@ export class ExecutionRepository {
     }
 
     async list(filters: ExecutionFilters): Promise<ExecutionListPage> {
+        const order = filters.order ?? 'desc';
         const parameters: unknown[] = [];
         const predicates: string[] = [];
         if (filters.jobId !== undefined) {
@@ -250,12 +252,12 @@ export class ExecutionRepository {
         if (filters.cursor !== undefined) {
             const cursor = decodeCursor(filters.cursor);
             parameters.push(cursor.requestedAt, cursor.executionId);
-            predicates.push(`(requested_at, id) < ($${parameters.length - 1}::timestamptz, $${parameters.length}::uuid)`);
+            predicates.push(`(requested_at, id) ${order === 'asc' ? '>' : '<'} ($${parameters.length - 1}::timestamptz, $${parameters.length}::uuid)`);
         }
         parameters.push(filters.limit + 1);
         const where = predicates.length === 0 ? '' : `WHERE ${predicates.join(' AND ')}`;
         const result = await this.pool.query<ExecutionRow>(
-            `SELECT * FROM executions ${where} ORDER BY requested_at DESC, id DESC LIMIT $${parameters.length}`,
+            `SELECT * FROM executions ${where} ORDER BY requested_at ${order.toUpperCase()}, id ${order.toUpperCase()} LIMIT $${parameters.length}`,
             parameters
         );
         const hasMore = result.rows.length > filters.limit;
@@ -277,6 +279,29 @@ export class ExecutionRepository {
         return result.rows.map(row => ({
             eventId: String(row.id), executionId: row.execution_id, type: row.event_type,
             payload: row.payload, createdAt: row.created_at.toISOString()
+        }));
+    }
+
+    async latestEventId(): Promise<bigint> {
+        const result = await this.pool.query<{ id: string | null }>(
+            'SELECT max(id)::text AS id FROM execution_events'
+        );
+        return BigInt(result.rows[0]?.id ?? '0');
+    }
+
+    async listEventsAfter(afterId = 0n, limit = 200): Promise<ExecutionEvent[]> {
+        const result = await this.pool.query<EventRow>(
+            `SELECT id, execution_id, event_type, payload, created_at
+             FROM execution_events WHERE id > $1
+             ORDER BY id LIMIT $2`,
+            [afterId.toString(), limit]
+        );
+        return result.rows.map(row => ({
+            eventId: String(row.id),
+            executionId: row.execution_id,
+            type: row.event_type,
+            payload: row.payload,
+            createdAt: row.created_at.toISOString()
         }));
     }
 

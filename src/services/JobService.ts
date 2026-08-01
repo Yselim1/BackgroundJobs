@@ -1,10 +1,11 @@
 import { AppError } from '../errors.js';
 import { ExecutionRepository } from '../repositories/ExecutionRepository.js';
 import { JobRepository } from '../repositories/JobRepository.js';
-import type { AuthenticatedActor, ExecutionSummary, Job, JobExecutionPlan, JobValidationResult, JobView, Step } from '../types/index.js';
+import type { AuthenticatedActor, ExecutionSummary, Job, JobExecutionPlan, JobStatus, JobValidationResult, JobView, Step } from '../types/index.js';
 import { buildDependencyLevels } from '../utils/jobGraph.js';
 import { normalizeExecutionInput } from '../utils/executionInput.js';
 import { assertValidJobDefinition, JobValidationError, validateJobDefinition } from '../utils/jobValidator.js';
+import { assertValidCron, nextOccurrence } from '../utils/cron.js';
 
 export class JobService {
     constructor(private readonly jobs: JobRepository, private readonly executions: ExecutionRepository) {}
@@ -27,6 +28,53 @@ export class JobService {
     }
 
     async deleteJob(jobId: string): Promise<void> { await this.jobs.delete(jobId); }
+
+    async setJobStatuses(jobIds: string[], status: JobStatus): Promise<JobView[]> {
+        return this.jobs.setStatuses(jobIds, status);
+    }
+
+    async previewSchedule(input: unknown): Promise<{
+        schedule: string;
+        timezone: string;
+        generatedAt: string;
+        occurrences: string[];
+    }> {
+        if (!isRecord(input)) {
+            throw new AppError('INVALID_SCHEDULE_PREVIEW', 'Request body must be an object.', 422);
+        }
+        const unsupported = Object.keys(input).filter(key => !['schedule', 'timezone', 'count'].includes(key));
+        if (unsupported.length > 0) {
+            throw new AppError('INVALID_SCHEDULE_PREVIEW', `Unsupported schedule preview field: ${unsupported[0]}.`, 422);
+        }
+        const schedule = input.schedule;
+        const timezone = input.timezone ?? 'UTC';
+        const count = input.count ?? 5;
+        if (typeof schedule !== 'string' || typeof timezone !== 'string') {
+            throw new AppError('INVALID_SCHEDULE_PREVIEW', 'schedule and timezone must be strings.', 422);
+        }
+        if (typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count > 10) {
+            throw new AppError('INVALID_SCHEDULE_PREVIEW', 'count must be an integer between 1 and 10.', 422);
+        }
+        try {
+            assertValidCron(schedule, timezone);
+        } catch (error: unknown) {
+            throw new AppError(
+                'INVALID_SCHEDULE_PREVIEW',
+                error instanceof Error ? error.message : String(error),
+                422
+            );
+        }
+        const generatedAt = (await this.jobs.pool.query<{ now: Date }>(
+            'SELECT clock_timestamp() AS now'
+        )).rows[0]!.now;
+        const occurrences: string[] = [];
+        let cursor = generatedAt;
+        for (let index = 0; index < count; index++) {
+            cursor = nextOccurrence(schedule, timezone, cursor);
+            occurrences.push(cursor.toISOString());
+        }
+        return { schedule, timezone, generatedAt: generatedAt.toISOString(), occurrences };
+    }
 
     async startJob(jobId: string, input?: unknown, actor?: AuthenticatedActor): Promise<ExecutionSummary> {
         return this.executions.enqueueManual(jobId, normalizeExecutionInput(input), actor);
@@ -64,6 +112,10 @@ export class JobService {
             }))
         };
     }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function stripReadOnly(view: JobView): Job {

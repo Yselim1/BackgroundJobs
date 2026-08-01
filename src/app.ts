@@ -59,7 +59,10 @@ export function createApp(dependencies: AppDependencies): express.Express {
     app.use('/api/jobs', createJobsController(dependencies.jobs));
     app.use('/api/executions', createExecutionsController(dependencies.executions, dependencies.manager));
     app.use('/api/logs', requirePermission('executions:read'), createLogsController(dependencies.executions));
-    app.use('/api/platform', requirePermission('platform:read'), createPlatformController(dependencies.pool));
+    app.use('/api/platform', requirePermission('platform:read'), createPlatformController(
+        dependencies.pool,
+        dependencies.manager.capacity
+    ));
     app.use('/api/security', createSecurityController(
         dependencies.security.auth,
         dependencies.security.secrets,

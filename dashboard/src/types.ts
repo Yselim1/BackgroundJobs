@@ -51,28 +51,61 @@ export interface PlatformOverview {
         failed24h: number;
         cancelled24h: number;
         skipped24h: number;
+        successRate24h: number | null;
+        averageQueueLatencyMs24h: number | null;
+        oldestQueuedAgeMs: number | null;
         averageSuccessDurationMs24h: number | null;
     };
     webhooks: { pending: number; delivering: number; failed: number };
+    workers: { capacity: number; busy: number; available: number; utilizationPercent: number };
+}
+
+export interface RetryPolicy {
+    MAX_ATTEMPTS?: number;
+    DELAY_MS?: number;
+    BACKOFF?: 'fixed' | 'exponential';
 }
 
 export interface JobStep {
+    ORDER: number;
     ID: string;
     NAME: string;
     TYPE: string;
-    WHEN?: { PATH: string };
+    DEPENDS_ON?: string[];
+    STEP_PARAMS: Record<string, unknown>;
+    WHEN?: { PATH: string; OPERATOR?: string; VALUE?: unknown };
     FOREACH?: { ITEMS: string; MAX_CONCURRENCY?: number };
+    RETRY?: RetryPolicy;
+    FAIL_JOB_ON_FAILURE?: boolean;
+    [key: string]: unknown;
 }
 
-export interface Job {
+export interface JobDefinition {
     id: string;
     name: string;
     status: 'active' | 'inactive';
+    description?: string;
     schedule?: string;
     timezone: string;
+    TIMEOUT_MS?: number;
+    MAX_CONCURRENCY?: number;
+    FAILURE_POLICY?: 'fail_fast' | 'continue_independent';
+    DEFAULT_STEP_RETRY?: RetryPolicy;
+    STEPS: JobStep[];
+    [key: string]: unknown;
+}
+
+export interface Job extends JobDefinition {
     next_run: string | null;
     last_run: string | null;
-    STEPS: JobStep[];
+    created_at?: string;
+    updated_at?: string;
+}
+
+export interface ValidationIssue {
+    path: string;
+    code: string;
+    message: string;
 }
 
 export interface ExecutionSummary {
@@ -80,10 +113,13 @@ export interface ExecutionSummary {
     jobId: string;
     trigger: 'manual' | 'scheduled';
     status: ExecutionStatus;
+    scheduledFor: string | null;
     requestedAt: string;
     requestedBy: { type: 'system' | 'user' | 'api_token'; userId: string | null; label: string };
     startedAt: string | null;
     finishedAt: string | null;
+    cancelRequestedAt: string | null;
+    cancelRequestedBy: { type: 'user' | 'api_token'; userId: string | null; label: string } | null;
     durationMs: number | null;
     error: { code: string | null; message: string } | null;
     skipReason: string | null;
@@ -93,7 +129,10 @@ export interface StepAttempt {
     attempt: number;
     itemIndex?: number;
     status: string;
+    startedAt?: string;
+    finishedAt?: string;
     durationMs?: number;
+    errorCode?: string;
     error?: string;
 }
 
@@ -104,16 +143,63 @@ export interface StepResult {
     status: string;
     durationMs?: number;
     attempts: StepAttempt[];
+    output?: unknown;
     reason?: string;
+    errorCode?: string;
     error?: string;
 }
 
 export interface ExecutionDetail extends ExecutionSummary {
     input: Record<string, unknown>;
+    jobDefinition: JobDefinition;
     stepResults: Record<string, StepResult>;
 }
 
 export interface ExecutionPage {
     items: ExecutionSummary[];
     nextCursor: string | null;
+}
+
+export interface ExecutionFilters {
+    jobId?: string;
+    status?: ExecutionStatus;
+    trigger?: 'manual' | 'scheduled';
+    from?: string;
+    to?: string;
+    limit?: number;
+    cursor?: string;
+    order?: 'asc' | 'desc';
+}
+
+export interface WebhookDelivery {
+    deliveryId: string;
+    executionId: string;
+    eventType: string;
+    url: string;
+    status: 'pending' | 'delivering' | 'success' | 'failed';
+    attemptCount: number;
+    nextAttemptAt: string;
+    responseStatus: number | null;
+    lastError: string | null;
+    createdAt: string;
+    updatedAt: string;
+    deliveredAt: string | null;
+}
+
+export interface JobPlan {
+    jobId: string;
+    maxConcurrency: number;
+    failurePolicy: 'fail_fast' | 'continue_independent';
+    levels: Array<{
+        level: number;
+        steps: Array<{
+            id: string;
+            name: string;
+            type: string;
+            order: number;
+            dependsOn: string[];
+            when?: unknown;
+            foreach?: unknown;
+        }>;
+    }>;
 }

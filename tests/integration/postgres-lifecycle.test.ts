@@ -80,6 +80,22 @@ describe('PostgreSQL repositories and lifecycle', () => {
         expect(history?.jobDefinition.name).toBe('Job history-job');
     });
 
+    it('bulk imports jobs atomically and refuses existing IDs', async () => {
+        await jobs.create(job('existing-import-job', 'inactive'));
+        await expect(jobs.createMany([
+            job('new-import-job', 'inactive'),
+            job('existing-import-job', 'inactive')
+        ])).rejects.toMatchObject({ code: 'JOB_ALREADY_EXISTS' });
+        expect(await jobs.getById('new-import-job')).toBeUndefined();
+
+        const created = await jobs.createMany([
+            job('import-one', 'inactive'),
+            job('import-two', 'inactive')
+        ]);
+        expect(created.map(item => item.id)).toEqual(['import-one', 'import-two']);
+        expect(created.every(item => item.next_run === null)).toBe(true);
+    });
+
     it('claims oldest work, protects active jobs, and reconciles interrupted executions', async () => {
         await jobs.create(job('first', 'inactive'));
         await jobs.create(job('second', 'inactive'));
@@ -259,6 +275,84 @@ describe('HTTP execution API', () => {
         await pool.query(`UPDATE executions SET status = 'success', finished_at = clock_timestamp() WHERE id = $1`, [queued.executionId]);
         await authenticatedRequest(app).post(`/api/executions/${queued.executionId}/cancel`).expect(409)
             .expect(response => expect(response.body.code).toBe('EXECUTION_NOT_CANCELLABLE'));
+    });
+
+    it('lets administrators activate and deactivate scheduled jobs through replacement', async () => {
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000);
+        const service = new JobService(jobs, executions);
+        const app = createApp({ pool, jobs: service, executions, manager, security });
+        const definition = { ...job('managed-status', 'inactive'), schedule: '0 * * * * *' };
+        await authenticatedRequest(app).post('/api/jobs').send(definition).expect(201)
+            .expect(response => expect(response.body.next_run).toBeNull());
+        await authenticatedRequest(app).put('/api/jobs/managed-status')
+            .send({ ...definition, status: 'active' })
+            .expect(200)
+            .expect(response => {
+                expect(response.body.status).toBe('active');
+                expect(response.body.next_run).toBeTypeOf('string');
+            });
+        await authenticatedRequest(app).put('/api/jobs/managed-status')
+            .send(definition)
+            .expect(200)
+            .expect(response => {
+                expect(response.body.status).toBe('inactive');
+                expect(response.body.next_run).toBeNull();
+            });
+    });
+
+    it('previews schedules and updates multiple job statuses atomically', async () => {
+        const manager = new JobExecutionManager(executions, undefined, 3, 1000);
+        const app = createApp({
+            pool,
+            jobs: new JobService(jobs, executions),
+            executions,
+            manager,
+            security
+        });
+        await Promise.all([
+            jobs.create({ ...job('bulk-one', 'inactive'), schedule: '*/10 * * * * *', timezone: 'Europe/Istanbul' }),
+            jobs.create({ ...job('bulk-two', 'inactive'), schedule: '0 * * * * *' })
+        ]);
+
+        await authenticatedRequest(app).post('/api/jobs/schedule-preview')
+            .send({ schedule: '*/10 * * * * *', timezone: 'Europe/Istanbul', count: 3 })
+            .expect(200)
+            .expect(response => {
+                expect(response.body.occurrences).toHaveLength(3);
+                expect(Date.parse(response.body.occurrences[1]) - Date.parse(response.body.occurrences[0])).toBe(10_000);
+            });
+        await authenticatedRequest(app).post('/api/jobs/schedule-preview')
+            .send({ schedule: '* * * * *', timezone: 'UTC' })
+            .expect(422)
+            .expect(response => expect(response.body.code).toBe('INVALID_SCHEDULE_PREVIEW'));
+
+        await authenticatedRequest(app).post('/api/jobs/bulk-status')
+            .send({ jobIds: ['bulk-one', 'bulk-two'], status: 'active' })
+            .expect(200)
+            .expect(response => {
+                expect(response.body.items).toHaveLength(2);
+                expect(response.body.items.every((item: { status: string }) => item.status === 'active')).toBe(true);
+                expect(response.body.items.every((item: { next_run: string | null }) => item.next_run !== null)).toBe(true);
+            });
+
+        const cursor = await executions.latestEventId();
+        const queued = await executions.enqueueManual('bulk-one');
+        await new Promise(resolve => setTimeout(resolve, 5));
+        const secondQueued = await executions.enqueueManual('bulk-two');
+        const events = await executions.listEventsAfter(cursor);
+        expect(events.some(event => event.executionId === queued.executionId && event.type === 'execution.queued')).toBe(true);
+        await authenticatedRequest(app).get('/api/executions?order=asc&limit=1').expect(200)
+            .expect(response => {
+                expect(response.body.items[0].executionId).toBe(queued.executionId);
+                expect(response.body.nextCursor).toBeTypeOf('string');
+            });
+        await authenticatedRequest(app).get('/api/executions?order=sideways').expect(400)
+            .expect(response => expect(response.body.code).toBe('INVALID_ORDER'));
+        expect(secondQueued.executionId).not.toBe(queued.executionId);
+        await authenticatedRequest(app).post('/api/jobs/bulk-status')
+            .send({ jobIds: ['bulk-one'], status: 'inactive' })
+            .expect(409)
+            .expect(response => expect(response.body.code).toBe('JOB_IS_ACTIVE'));
     });
 
     it('persists runtime input, exposes filtered history, and replays durable SSE events', async () => {
@@ -448,6 +542,14 @@ describe('HTTP execution API', () => {
                 .expect(response => {
                     expect(response.body.jobs.total).toBe(1);
                     expect(response.body.executions.success24h).toBe(1);
+                    expect(response.body.executions.successRate24h).toBe(100);
+                    expect(response.body.executions.averageQueueLatencyMs24h).toBeTypeOf('number');
+                    expect(response.body.workers).toEqual({
+                        capacity: 1,
+                        busy: 0,
+                        available: 1,
+                        utilizationPercent: 0
+                    });
                 });
             await authenticatedRequest(app).get('/api/platform/executors').expect(200)
                 .expect(response => expect(response.body.items).toEqual(

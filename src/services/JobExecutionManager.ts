@@ -21,6 +21,7 @@ export class JobExecutionManager {
     ) {}
 
     get started(): boolean { return this.servicesStarted; }
+    get capacity(): number { return this.workerConcurrency; }
 
     async start(): Promise<void> {
         if (this.acceptingWork) return;

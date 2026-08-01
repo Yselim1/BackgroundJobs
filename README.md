@@ -49,6 +49,17 @@ Configuration:
 
 Application startup checks the migration version and exits with an actionable error if the database is behind. Migrations are numbered SQL files and `npm run migrate` serializes concurrent migrators with a PostgreSQL advisory lock.
 
+### Import legacy JSON jobs
+
+Legacy job arrays can be validated and normalized before they are moved into PostgreSQL:
+
+```powershell
+npm run jobs:import -- examples/jobs.json --dry-run
+npm run jobs:import -- examples/jobs.json --apply
+```
+
+The importer converts five-field cron schedules to six fields, defaults missing timezones to UTC, removes server-managed timestamp fields, converts `maxRetries` to `DEFAULT_STEP_RETRY.MAX_ATTEMPTS`, and refuses duplicate IDs. Imports are transactional and every imported job is forced to `inactive` so high-frequency or intentionally failing jobs cannot begin running before review. Run the dry-run first; `--apply` is the only mode that writes to PostgreSQL.
+
 ## Job definition
 
 ```json
@@ -104,6 +115,8 @@ Supported step types are `RESTAPI`, `SCRIPT`, `COMMAND`, and `PYTHON`. Step depe
 | `GET` | `/health/ready` | Database, schema, scheduler, and dispatcher readiness |
 | `GET` | `/api/jobs` | List jobs |
 | `POST` | `/api/jobs/validate` | Validate a definition |
+| `POST` | `/api/jobs/schedule-preview` | Validate a schedule and calculate its next 1–10 occurrences |
+| `POST` | `/api/jobs/bulk-status` | Atomically activate or deactivate up to 100 jobs |
 | `POST` | `/api/jobs` | Create a job |
 | `GET` | `/api/jobs/:id` | Get a job |
 | `PUT` | `/api/jobs/:id` | Replace a job |
@@ -111,6 +124,7 @@ Supported step types are `RESTAPI`, `SCRIPT`, `COMMAND`, and `PYTHON`. Step depe
 | `GET` | `/api/jobs/:id/plan` | Inspect dependency levels |
 | `POST` | `/api/jobs/:id/run` | Queue a manual execution (`202`) |
 | `GET` | `/api/executions` | Filter and cursor-page execution summaries |
+| `GET` | `/api/executions/events` | Follow new durable execution/step events using SSE |
 | `GET` | `/api/executions/:id` | Get an execution with steps and attempts |
 | `GET` | `/api/executions/:id/events` | Replay and follow durable progress using SSE |
 | `GET` | `/api/executions/:id/webhooks` | Inspect webhook delivery state |
@@ -118,7 +132,7 @@ Supported step types are `RESTAPI`, `SCRIPT`, `COMMAND`, and `PYTHON`. Step depe
 | `GET` | `/api/logs` | Legacy array alias |
 | `GET` | `/api/logs/:id` | Legacy detail alias |
 
-Execution list parameters are `jobId`, `status`, `trigger`, `from`, `to`, `limit` (default 50, maximum 200), and opaque `cursor`. Ordering is `requestedAt DESC, executionId DESC`.
+Execution list parameters are `jobId`, `status`, `trigger`, `from`, `to`, `order` (`desc` by default or `asc`), `limit` (default 50, maximum 200), and opaque `cursor`. Ordering uses `requestedAt` and `executionId` in the selected direction.
 
 A manual run returns immediately:
 
@@ -348,7 +362,7 @@ npm run dev
 
 For production, run `npm run build` inside `dashboard/` and serve its `dist/` output behind the same origin/reverse proxy as the API. `VITE_API_BASE_URL` can point at an origin explicitly listed in `CORS_ALLOWED_ORIGINS`.
 
-The dashboard provides login/logout, permission-aware run/cancel controls, and an admin security console for user lifecycle, role assignment, managed-secret rotation, and immutable audit review. It also supports execution filtering, authenticated live SSE updates, fan-out attempt visibility, and workflow progress inspection.
+The dashboard provides login/logout, permission-aware run/cancel controls, and an admin security console for user lifecycle, role assignment, managed-secret rotation, and immutable audit review. Its Jobs workspace supports URL-persisted filters and sorting, bulk status changes, definition duplication/export, schedule previews, high-frequency activation warnings, managed-secret name suggestions, and dependency previews. Deep-linkable job detail and Logs pages expose workflow plans, actor/input data, attempts, outputs, cancellation state, and webhook deliveries. Tables refresh from the authenticated global SSE feed, while the overview reports worker utilization, queue latency, and the 24-hour success rate.
 
 ## Adding Kafka or RabbitMQ later
 

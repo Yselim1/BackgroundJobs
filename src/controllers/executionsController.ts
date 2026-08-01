@@ -29,8 +29,13 @@ export function createExecutionsController(executions: ExecutionRepository, mana
             throw new AppError('INVALID_DATE_RANGE', 'from must be earlier than to.', 400);
         }
         const cursor = parseOptionalString(req.query.cursor, 'cursor');
+        const order = parseOptionalString(req.query.order, 'order') ?? 'desc';
+        if (order !== 'asc' && order !== 'desc') {
+            throw new AppError('INVALID_ORDER', 'order must be asc or desc.', 400);
+        }
         res.status(200).json(await executions.list({
             limit,
+            order,
             ...(jobId === undefined ? {} : { jobId }),
             ...(status === undefined ? {} : { status: status as ExecutionStatus }),
             ...(trigger === undefined ? {} : { trigger: trigger as ExecutionTrigger }),
@@ -39,6 +44,16 @@ export function createExecutionsController(executions: ExecutionRepository, mana
             ...(cursor === undefined ? {} : { cursor })
         }));
     }));
+    router.get('/events', requirePermission('executions:read'), (req, res, next) => {
+        void streamAllEvents(executions, req, res).catch(error => {
+            if (res.headersSent) {
+                res.write(`event: error\ndata: ${JSON.stringify({ error: 'Event stream failed.' })}\n\n`);
+                res.end();
+                return;
+            }
+            next(error);
+        });
+    });
     router.get('/:id/events', requirePermission('executions:read'), (req, res, next) => {
         void streamEvents(executions, req, res).catch(error => {
             if (res.headersSent) {
@@ -65,6 +80,37 @@ export function createExecutionsController(executions: ExecutionRepository, mana
         res.status(200).json(await manager.cancel(req.params.id as string, req.auth));
     }));
     return router;
+}
+
+async function streamAllEvents(executions: ExecutionRepository, req: Request, res: Response): Promise<void> {
+    const suppliedCursor = req.headers['last-event-id'] ?? req.query.after;
+    let cursor = suppliedCursor === undefined
+        ? await executions.latestEventId()
+        : parseEventCursor(suppliedCursor);
+    res.status(200);
+    res.set({
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no'
+    });
+    res.flushHeaders();
+
+    let closed = false;
+    let lastHeartbeat = Date.now();
+    req.once('close', () => { closed = true; });
+    while (!closed) {
+        const events = await executions.listEventsAfter(cursor, 200);
+        for (const event of events) {
+            cursor = BigInt(event.eventId);
+            res.write(`id: ${event.eventId}\nevent: execution.update\ndata: ${JSON.stringify(event)}\n\n`);
+        }
+        if (Date.now() - lastHeartbeat >= 15_000) {
+            res.write(': heartbeat\n\n');
+            lastHeartbeat = Date.now();
+        }
+        await new Promise(resolve => setTimeout(resolve, 250));
+    }
 }
 
 async function streamEvents(executions: ExecutionRepository, req: Request, res: Response): Promise<void> {

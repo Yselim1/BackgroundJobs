@@ -199,6 +199,8 @@ function describeMutation(req: Request): {
     if (SAFE_METHODS.has(req.method) || path === '/api/auth/login') return undefined;
     const mappings: Array<[RegExp, string, string?]> = [
         [/^\/api\/jobs\/validate$/u, 'job.validate', 'job'],
+        [/^\/api\/jobs\/schedule-preview$/u, 'job.schedule_preview', 'job'],
+        [/^\/api\/jobs\/bulk-status$/u, 'job.bulk_status', 'job'],
         [/^\/api\/jobs\/([^/]+)\/run$/u, 'execution.queue', 'job'],
         [/^\/api\/jobs\/([^/]+)$/u, req.method === 'DELETE' ? 'job.delete' : 'job.replace', 'job'],
         [/^\/api\/jobs$/u, 'job.create', 'job'],

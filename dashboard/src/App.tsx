@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import {
     AUTH_EXPIRED_EVENT,
     cancelExecution,
     createSecurityUser,
     deleteManagedSecret,
-    executionEventUrl,
+    executionFeedUrl,
     getAuditEvents,
     getCurrentUser,
     getExecution,
     getExecutions,
+    getWebhookDeliveries,
     getJobs,
     getManagedSecrets,
     getOverview,
@@ -20,6 +21,11 @@ import {
     updateSecurityUser
 } from './api';
 import { formatDuration, formatRelativeTime, titleCase } from './format';
+import { JobsPage } from './jobs/JobsPage';
+import { JobDetailPage } from './jobs/JobDetailPage';
+import { LogsPage } from './logs/LogsPage';
+import { navigate, parseDashboardRoute, type DashboardRoute } from './routes';
+import { useModalBehavior } from './useModalBehavior';
 import type {
     AuditEvent,
     AuthSession,
@@ -30,17 +36,45 @@ import type {
     ManagedSecret,
     PlatformOverview,
     SecurityRole,
-    SecurityUser
+    SecurityUser,
+    WebhookDelivery
 } from './types';
 
 const EXECUTION_STATUSES: Array<ExecutionStatus | 'all'> = [
     'all', 'running', 'queued', 'failed', 'success', 'cancelled', 'skipped'
 ];
-const TERMINAL = new Set<ExecutionStatus>(['success', 'failed', 'cancelled', 'skipped']);
-const SSE_EVENTS = [
-    'execution.running', 'execution.success', 'execution.failed', 'execution.cancelled',
-    'step.running', 'step.success', 'step.failed', 'step.cancelled', 'step.skipped'
-];
+function useDashboardRoute(): DashboardRoute {
+    const [route, setRoute] = useState<DashboardRoute>(() => parseDashboardRoute(normalizeLegacyHash()));
+    useEffect(() => {
+        const update = () => setRoute(parseDashboardRoute(normalizeLegacyHash()));
+        const followInternalLink = (event: MouseEvent) => {
+            if (
+                event.defaultPrevented || event.button !== 0 || event.metaKey
+                || event.ctrlKey || event.shiftKey || event.altKey
+            ) return;
+            const target = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null;
+            if (target === null || target.target.length > 0 || target.hasAttribute('download')) return;
+            const url = new URL(target.href, window.location.href);
+            if (url.origin !== window.location.origin) return;
+            event.preventDefault();
+            navigate(url.pathname + url.search);
+        };
+        window.addEventListener('popstate', update);
+        document.addEventListener('click', followInternalLink);
+        return () => {
+            window.removeEventListener('popstate', update);
+            document.removeEventListener('click', followInternalLink);
+        };
+    }, []);
+    return route;
+}
+
+function normalizeLegacyHash(): string {
+    if (window.location.hash.startsWith('#/')) {
+        window.history.replaceState(null, '', window.location.hash.slice(1));
+    }
+    return window.location.pathname;
+}
 
 export function App() {
     const [session, setSession] = useState<AuthSession | null>();
@@ -64,18 +98,21 @@ export function App() {
 }
 
 function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
+    const route = useDashboardRoute();
     const [overview, setOverview] = useState<PlatformOverview>();
     const [jobs, setJobs] = useState<Job[]>([]);
     const [executions, setExecutions] = useState<ExecutionSummary[]>([]);
     const [status, setStatus] = useState<ExecutionStatus | 'all'>('all');
-    const [search, setSearch] = useState('');
     const [selected, setSelected] = useState<ExecutionDetail>();
+    const [webhooks, setWebhooks] = useState<WebhookDelivery[]>([]);
+    const [liveVersion, setLiveVersion] = useState(0);
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState<string>();
     const [error, setError] = useState<string>();
     const [securityOpen, setSecurityOpen] = useState(false);
     const canRun = props.session.permissions.includes('jobs:run');
     const canCancel = props.session.permissions.includes('executions:cancel');
+    const canWriteJobs = props.session.permissions.includes('jobs:write');
     const canAdminister = props.session.user.role === 'admin';
 
     const refresh = useCallback(async (quiet = false) => {
@@ -84,7 +121,7 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
             const [nextOverview, nextJobs, nextExecutions] = await Promise.all([
                 getOverview(),
                 getJobs(),
-                getExecutions(status === 'all' ? undefined : status)
+                getExecutions(status === 'all' ? {} : { status })
             ]);
             setOverview(nextOverview);
             setJobs(nextJobs);
@@ -99,7 +136,12 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
 
     const openExecution = useCallback(async (executionId: string) => {
         try {
-            setSelected(await getExecution(executionId));
+            const [execution, deliveries] = await Promise.all([
+                getExecution(executionId),
+                getWebhookDeliveries(executionId)
+            ]);
+            setSelected(execution);
+            setWebhooks(deliveries);
             setError(undefined);
         } catch (caught) {
             setError(caught instanceof Error ? caught.message : String(caught));
@@ -113,22 +155,30 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
     }, [refresh]);
 
     useEffect(() => {
-        if (selected === undefined || TERMINAL.has(selected.status)) return;
-        const source = new EventSource(executionEventUrl(selected.executionId), { withCredentials: true });
-        const update = () => {
-            void openExecution(selected.executionId);
-            void refresh(true);
-        };
-        SSE_EVENTS.forEach(event => source.addEventListener(event, update));
-        source.onerror = () => source.close();
+        const source = new EventSource(executionFeedUrl(), { withCredentials: true });
+        let refreshTimer: number | undefined;
+        source.addEventListener('execution.update', event => {
+            const payload = JSON.parse((event as MessageEvent<string>).data) as { executionId?: string };
+            if (refreshTimer === undefined) {
+                refreshTimer = window.setTimeout(() => {
+                    refreshTimer = undefined;
+                    setLiveVersion(value => value + 1);
+                    void refresh(true);
+                }, 250);
+            }
+            if (payload.executionId !== undefined && payload.executionId === selected?.executionId) {
+                void openExecution(payload.executionId);
+            }
+        });
+        source.onerror = () => undefined;
         return () => source.close();
-    }, [openExecution, refresh, selected?.executionId, selected?.status]);
+    }, [openExecution, refresh, selected?.executionId]);
 
-    const filteredJobs = useMemo(() => {
-        const needle = search.trim().toLowerCase();
-        if (needle.length === 0) return jobs;
-        return jobs.filter(job => job.name.toLowerCase().includes(needle) || job.id.toLowerCase().includes(needle));
-    }, [jobs, search]);
+    useEffect(() => {
+        if (route.page === 'logs' && route.executionId !== undefined) {
+            void openExecution(route.executionId);
+        }
+    }, [openExecution, route.page, route.page === 'logs' ? route.executionId : undefined]);
 
     const handleRun = async (jobId: string) => {
         setBusy('run:' + jobId);
@@ -170,6 +220,13 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                         <small>Background operations</small>
                     </span>
                 </a>
+                <nav className="primary-nav" aria-label="Primary navigation">
+                    <a href="/" aria-current={route.page === 'overview' ? 'page' : undefined}>Overview</a>
+                    <a href="/jobs" aria-current={route.page === 'jobs' || route.page === 'job-detail' ? 'page' : undefined}>
+                        Jobs <span>{jobs.length}</span>
+                    </a>
+                    <a href="/logs" aria-current={route.page === 'logs' ? 'page' : undefined}>Logs</a>
+                </nav>
                 <div className="system-state">
                     <span className="pulse" aria-hidden="true" />
                     <span>System online</span>
@@ -195,17 +252,6 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
             </header>
 
             <main>
-                <section className="hero">
-                    <div>
-                        <p className="eyebrow">Operations desk</p>
-                        <h1>Know what is moving.<br />Intervene when it matters.</h1>
-                    </div>
-                    <div className="hero-signal">
-                        <span>{(overview?.executions.running ?? 0) + (overview?.executions.queued ?? 0)}</span>
-                        <small>executions in motion</small>
-                    </div>
-                </section>
-
                 {error !== undefined && (
                     <div className="error-banner" role="alert">
                         <span>{error}</span>
@@ -213,15 +259,21 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                     </div>
                 )}
 
-                <section className="metrics" aria-label="System overview">
-                    <Metric label="Active jobs" value={overview?.jobs.active} note={(overview?.jobs.inactive ?? 0) + ' inactive'} />
-                    <Metric label="Running now" value={overview?.executions.running} note={(overview?.executions.queued ?? 0) + ' queued'} tone="teal" />
-                    <Metric label="Succeeded · 24h" value={overview?.executions.success24h} note={'Avg ' + formatDuration(overview?.executions.averageSuccessDurationMs24h)} />
-                    <Metric label="Needs attention" value={(overview?.executions.failed24h ?? 0) + (overview?.webhooks.failed ?? 0)} note={(overview?.webhooks.failed ?? 0) + ' webhook failures'} tone="orange" />
-                </section>
+                {route.page === 'overview' ? (
+                    <>
+                        <section className="metrics" aria-label="System overview">
+                            <Metric label="Active jobs" value={overview?.jobs.active} note={(overview?.jobs.inactive ?? 0) + ' inactive'} />
+                            <Metric label="Running now" value={overview?.executions.running} note={(overview?.executions.queued ?? 0) + ' queued'} tone="teal" />
+                            <Metric label="Succeeded · 24h" value={overview?.executions.success24h} note={'Avg ' + formatDuration(overview?.executions.averageSuccessDurationMs24h)} />
+                            <Metric label="Needs attention" value={(overview?.executions.failed24h ?? 0) + (overview?.webhooks.failed ?? 0)} note={(overview?.webhooks.failed ?? 0) + ' webhook failures'} tone="orange" />
+                        </section>
+                        <section className="operations-strip" aria-label="Worker and queue health">
+                            <DetailMetric label="Worker utilization" value={(overview?.workers.utilizationPercent ?? 0) + '%'} note={(overview?.workers.busy ?? 0) + ' of ' + (overview?.workers.capacity ?? 0) + ' workers busy'} />
+                            <DetailMetric label="Queue latency · 24h" value={formatDuration(overview?.executions.averageQueueLatencyMs24h)} note={'Oldest queued ' + formatDuration(overview?.executions.oldestQueuedAgeMs)} />
+                            <DetailMetric label="Success rate · 24h" value={overview?.executions.successRate24h === null || overview?.executions.successRate24h === undefined ? '—' : overview.executions.successRate24h + '%'} note={(overview?.executions.failed24h ?? 0) + ' failed executions'} />
+                        </section>
 
-                <section className="workspace">
-                    <div className="panel runs-panel">
+                        <section className="panel runs-panel">
                         <div className="panel-heading">
                             <div>
                                 <p className="eyebrow">Execution stream</p>
@@ -260,56 +312,50 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                                 </tbody>
                             </table>
                         </div>
-                    </div>
-
-                    <div className="panel jobs-panel">
-                        <div className="panel-heading">
-                            <div>
-                                <p className="eyebrow">Inventory</p>
-                                <h2>Jobs</h2>
-                            </div>
-                            <input
-                                className="search"
-                                value={search}
-                                onChange={event => setSearch(event.target.value)}
-                                placeholder="Find a job"
-                                aria-label="Find a job"
-                            />
-                        </div>
-                        <div className="job-list">
-                            {filteredJobs.map(job => (
-                                <article className="job-card" key={job.id}>
-                                    <div className="job-state" data-active={job.status === 'active'} aria-hidden="true" />
-                                    <div className="job-copy">
-                                        <div className="job-title">
-                                            <strong>{job.name}</strong>
-                                            <span>{job.STEPS.length} steps</span>
-                                            {job.STEPS.some(step => step.WHEN !== undefined) && <em>conditional</em>}
-                                            {job.STEPS.some(step => step.FOREACH !== undefined) && <em>fan-out</em>}
-                                        </div>
-                                        <p>{job.schedule === undefined ? 'Manual only' : job.schedule + ' · ' + job.timezone}</p>
-                                        <small>Next {job.next_run === null ? 'not scheduled' : formatRelativeTime(job.next_run)}</small>
-                                    </div>
-                                    <button
-                                        className="button button-run"
-                                        onClick={() => void handleRun(job.id)}
-                                        disabled={!canRun || busy === 'run:' + job.id}
-                                        title={canRun ? 'Queue this job' : 'Operator or admin role required'}
-                                    >
-                                        {busy === 'run:' + job.id ? 'Queuing…' : 'Run'}
-                                    </button>
-                                </article>
-                            ))}
-                            {!loading && filteredJobs.length === 0 && <p className="empty">No jobs found.</p>}
-                        </div>
-                    </div>
-                </section>
+                        </section>
+                    </>
+                ) : route.page === 'jobs' ? (
+                    <JobsPage
+                        jobs={jobs}
+                        loading={loading}
+                        runBusy={busy}
+                        canRun={canRun}
+                        canWrite={canWriteJobs}
+                        onRun={handleRun}
+                        onChanged={() => refresh(true)}
+                        onError={setError}
+                    />
+                ) : route.page === 'job-detail' ? (
+                    <JobDetailPage
+                        job={jobs.find(job => job.id === route.jobId)}
+                        canRun={canRun}
+                        canWrite={canWriteJobs}
+                        liveVersion={liveVersion}
+                        runBusy={busy}
+                        onRun={handleRun}
+                        onOpenExecution={openExecution}
+                        onError={setError}
+                    />
+                ) : (
+                    <LogsPage
+                        jobs={jobs}
+                        liveVersion={liveVersion}
+                        onError={setError}
+                    />
+                )}
             </main>
 
             <ExecutionDrawer
                 execution={selected}
+                webhooks={webhooks}
                 busy={busy === 'cancel:' + selected?.executionId}
-                onClose={() => setSelected(undefined)}
+                onClose={() => {
+                    setSelected(undefined);
+                    setWebhooks([]);
+                    if (route.page === 'logs' && route.executionId !== undefined) {
+                        navigate('/logs' + window.location.search, true);
+                    }
+                }}
                 onCancel={handleCancel}
                 canCancel={canCancel}
             />
@@ -369,6 +415,7 @@ function LoginScreen(props: { onAuthenticated: (session: AuthSession) => void })
 }
 
 function SecurityPanel(props: { open: boolean; onClose: () => void }) {
+    useModalBehavior(props.open, props.onClose);
     const [users, setUsers] = useState<SecurityUser[]>([]);
     const [secrets, setSecrets] = useState<ManagedSecret[]>([]);
     const [audit, setAudit] = useState<AuditEvent[]>([]);
@@ -457,10 +504,21 @@ function SecurityPanel(props: { open: boolean; onClose: () => void }) {
 
     return (
         <>
-            <button className={'drawer-backdrop ' + (props.open ? 'visible' : '')} onClick={props.onClose} aria-label="Close security console" />
-            <aside className={'security-panel ' + (props.open ? 'open' : '')} aria-hidden={!props.open}>
+            <button
+                className={'drawer-backdrop ' + (props.open ? 'visible' : '')}
+                onClick={props.onClose}
+                aria-label="Close security console"
+                tabIndex={props.open ? 0 : -1}
+            />
+            <aside
+                className={'security-panel ' + (props.open ? 'open' : '')}
+                aria-hidden={!props.open}
+                aria-modal="true"
+                aria-labelledby="security-modal-title"
+                role="dialog"
+            >
                 <div className="drawer-head">
-                    <div><p className="eyebrow">Administration</p><h2>Security console</h2></div>
+                    <div><p className="eyebrow">Administration</p><h2 id="security-modal-title">Security console</h2></div>
                     <button className="close" onClick={props.onClose} aria-label="Close">×</button>
                 </div>
                 {error !== undefined && <div className="error-banner" role="alert">{error}</div>}
@@ -548,18 +606,24 @@ function Metric(props: { label: string; value?: number; note: string; tone?: str
     );
 }
 
+function DetailMetric(props: { label: string; value: string; note: string }) {
+    return <article><span>{props.label}</span><strong>{props.value}</strong><small>{props.note}</small></article>;
+}
+
 function StatusPill({ status }: { status: string }) {
     return <span className={'status status-' + status}><i aria-hidden="true" />{titleCase(status)}</span>;
 }
 
 function ExecutionDrawer(props: {
     execution?: ExecutionDetail;
+    webhooks: WebhookDelivery[];
     busy: boolean;
     canCancel: boolean;
     onClose: () => void;
     onCancel: (executionId: string) => Promise<void>;
 }) {
     const execution = props.execution;
+    useModalBehavior(execution !== undefined, props.onClose);
     return (
         <>
             <button
@@ -568,13 +632,19 @@ function ExecutionDrawer(props: {
                 aria-label="Close execution details"
                 tabIndex={execution === undefined ? -1 : 0}
             />
-            <aside className={'drawer ' + (execution === undefined ? '' : 'open')} aria-hidden={execution === undefined}>
+            <aside
+                className={'drawer ' + (execution === undefined ? '' : 'open')}
+                aria-hidden={execution === undefined}
+                aria-modal="true"
+                aria-labelledby="execution-modal-title"
+                role="dialog"
+            >
                 {execution !== undefined && (
                     <>
                         <div className="drawer-head">
                             <div>
                                 <p className="eyebrow">{execution.trigger} execution</p>
-                                <h2>{execution.jobId}</h2>
+                                <h2 id="execution-modal-title">{execution.jobId}</h2>
                                 <code>{execution.executionId}</code>
                             </div>
                             <button className="close" onClick={props.onClose} aria-label="Close">×</button>
@@ -584,6 +654,18 @@ function ExecutionDrawer(props: {
                             <span>{formatDuration(execution.durationMs)}</span>
                             <span>{formatRelativeTime(execution.requestedAt)}</span>
                         </div>
+                        <div className="execution-facts">
+                            <div><span>Requested by</span><strong>{execution.requestedBy.label}</strong><small>{titleCase(execution.requestedBy.type)}</small></div>
+                            <div><span>Requested</span><strong>{new Date(execution.requestedAt).toLocaleString()}</strong></div>
+                            <div><span>Started</span><strong>{execution.startedAt === null ? 'Not started' : new Date(execution.startedAt).toLocaleString()}</strong></div>
+                            <div><span>Finished</span><strong>{execution.finishedAt === null ? 'Not finished' : new Date(execution.finishedAt).toLocaleString()}</strong></div>
+                        </div>
+                        {execution.cancelRequestedAt !== null && (
+                            <div className="execution-cancellation">
+                                Cancellation requested {formatRelativeTime(execution.cancelRequestedAt)}
+                                {execution.cancelRequestedBy === null ? '' : ' by ' + execution.cancelRequestedBy.label}
+                            </div>
+                        )}
                         {props.canCancel && (execution.status === 'queued' || execution.status === 'running') && (
                             <button
                                 className="button button-cancel"
@@ -611,17 +693,49 @@ function ExecutionDrawer(props: {
                                         </div>
                                         <p>{step.stepType} · {formatDuration(step.durationMs)}</p>
                                         {step.attempts.length > 0 && (
-                                            <small>
-                                                {step.attempts.length} attempt{step.attempts.length === 1 ? '' : 's'}
-                                                {step.attempts.some(attempt => attempt.itemIndex !== undefined)
-                                                    ? ' across ' + new Set(step.attempts.map(attempt => attempt.itemIndex)).size + ' items'
-                                                    : ''}
-                                            </small>
+                                            <div className="attempt-list">
+                                                {step.attempts.map((attempt, attemptIndex) => (
+                                                    <div key={attemptIndex}>
+                                                        <span>Attempt {attempt.attempt}{attempt.itemIndex === undefined ? '' : ' · item ' + attempt.itemIndex}</span>
+                                                        <StatusPill status={attempt.status} />
+                                                        <small>{formatDuration(attempt.durationMs)}</small>
+                                                        {attempt.error !== undefined && <p>{attempt.errorCode === undefined ? '' : attempt.errorCode + ': '}{attempt.error}</p>}
+                                                    </div>
+                                                ))}
+                                            </div>
                                         )}
                                         {(step.error ?? step.reason) !== undefined && <small className="step-error">{step.error ?? step.reason}</small>}
+                                        {step.output !== undefined && (
+                                            <div className="step-output">
+                                                <span>Output</span>
+                                                <pre>{typeof step.output === 'string'
+                                                    ? step.output
+                                                    : JSON.stringify(step.output, null, 2)}
+                                                </pre>
+                                            </div>
+                                        )}
                                     </div>
                                 </article>
                             ))}
+                        </div>
+                        <details className="execution-payload">
+                            <summary>Input and job snapshot</summary>
+                            <h4>Execution input</h4>
+                            <pre>{JSON.stringify(execution.input, null, 2)}</pre>
+                            <h4>Job definition snapshot</h4>
+                            <pre>{JSON.stringify(execution.jobDefinition, null, 2)}</pre>
+                        </details>
+                        <div className="webhook-section">
+                            <h3>Webhook deliveries</h3>
+                            {props.webhooks.map(delivery => (
+                                <article key={delivery.deliveryId}>
+                                    <div><strong>{delivery.eventType}</strong><StatusPill status={delivery.status} /></div>
+                                    <code>{delivery.url}</code>
+                                    <small>{delivery.attemptCount} attempt{delivery.attemptCount === 1 ? '' : 's'}{delivery.responseStatus === null ? '' : ' · HTTP ' + delivery.responseStatus}</small>
+                                    {delivery.lastError !== null && <p>{delivery.lastError}</p>}
+                                </article>
+                            ))}
+                            {props.webhooks.length === 0 && <p className="muted-copy">No webhook deliveries for this execution.</p>}
                         </div>
                     </>
                 )}
