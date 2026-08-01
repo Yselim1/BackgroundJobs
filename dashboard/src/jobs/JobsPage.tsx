@@ -407,7 +407,7 @@ function JobEditor(props: {
                 && !(await confirmDefinitionFrequency(definition))
             ) return;
             const saved = editing
-                ? await replaceJob(props.job!.id, definition)
+                ? await replaceJob(props.job!.id, definition, props.job!.version)
                 : await createJob(definition);
             await props.onSaved(saved);
         } catch (caught) {
@@ -501,6 +501,12 @@ function JobEditor(props: {
                             </Field>
                             <Field label="Step concurrency">
                                 <input type="number" min="1" value={form.maxConcurrency} onChange={event => update('maxConcurrency', event.target.value)} />
+                            </Field>
+                            <Field label="Worker queue">
+                                <input value={form.queue} onChange={event => update('queue', event.target.value)} placeholder="default" required />
+                            </Field>
+                            <Field label="Queue priority" hint="-100 to 100; higher runs first">
+                                <input type="number" min="-100" max="100" value={form.priority} onChange={event => update('priority', event.target.value)} required />
                             </Field>
                             <Field label="Failure policy">
                                 <select

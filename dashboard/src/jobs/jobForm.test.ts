@@ -34,6 +34,7 @@ describe('job editor forms', () => {
     it('preserves advanced job and step fields while removing response metadata', () => {
         const job = {
             id: 'advanced',
+            version: 1,
             name: 'Advanced',
             status: 'active',
             timezone: 'UTC',

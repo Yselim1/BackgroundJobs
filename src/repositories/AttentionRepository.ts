@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseClient, DatabasePool } from '../db/pool.js';
-import { isUniqueViolation, withTransaction } from '../db/pool.js';
+import { withTransaction } from '../db/pool.js';
 import { AppError } from '../errors.js';
 import type { ExecutionRepository } from './ExecutionRepository.js';
 import type {
@@ -108,8 +108,7 @@ export class AttentionRepository {
         executions: ExecutionRepository,
         actor: AuthenticatedActor
     ): Promise<AttentionItem> {
-        try {
-            return await withTransaction(this.pool, async client => {
+        return withTransaction(this.pool, async client => {
                 const item = await lockAttention(client, attentionId);
                 assertRemediable(item, 'execution_failure', 'rerun');
                 const source = await client.query<{ input: Record<string, unknown> }>(
@@ -144,17 +143,7 @@ export class AttentionRepository {
                     originalExecutionId: item.source_id,
                     newExecutionId
                 });
-            });
-        } catch (error: unknown) {
-            if (isUniqueViolation(error, 'executions_one_active_per_job_uidx')) {
-                throw new AppError(
-                    'ATTENTION_JOB_ACTIVE',
-                    'The job already has a queued or running execution.',
-                    409
-                );
-            }
-            throw error;
-        }
+        });
     }
 
     async retryWebhook(attentionId: string, actor: AuthenticatedActor): Promise<AttentionItem> {

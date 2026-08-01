@@ -2,6 +2,11 @@ export interface AppConfig {
     databaseUrl: string;
     dbPoolMax: number;
     workerConcurrency: number;
+    workerName: string | undefined;
+    workerQueues: string[];
+    workerHeartbeatMs: number;
+    executionLeaseMs: number;
+    workerStaleMs: number;
     schedulerPollMs: number;
     shutdownGraceMs: number;
     webhookConcurrency: number;
@@ -23,6 +28,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         databaseUrl: env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/backgroundjobs',
         dbPoolMax: positiveInteger(env.DB_POOL_MAX, 10, 'DB_POOL_MAX'),
         workerConcurrency: positiveInteger(env.WORKER_CONCURRENCY, 4, 'WORKER_CONCURRENCY'),
+        workerName: nonEmptyString(env.WORKER_NAME, 'WORKER_NAME'),
+        workerQueues: workerQueues(env.WORKER_QUEUES),
+        workerHeartbeatMs: positiveInteger(env.WORKER_HEARTBEAT_MS, 5_000, 'WORKER_HEARTBEAT_MS'),
+        executionLeaseMs: positiveInteger(env.EXECUTION_LEASE_MS, 20_000, 'EXECUTION_LEASE_MS'),
+        workerStaleMs: positiveInteger(env.WORKER_STALE_MS, 30_000, 'WORKER_STALE_MS'),
         schedulerPollMs: positiveInteger(env.SCHEDULER_POLL_MS, 1000, 'SCHEDULER_POLL_MS'),
         shutdownGraceMs: positiveInteger(env.SHUTDOWN_GRACE_MS, 10000, 'SHUTDOWN_GRACE_MS'),
         webhookConcurrency: positiveInteger(env.WEBHOOK_CONCURRENCY, 2, 'WEBHOOK_CONCURRENCY'),
@@ -41,6 +51,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     if (config.authSessionIdleMs > config.authSessionTtlMs) {
         throw new Error('AUTH_SESSION_IDLE_MS cannot exceed AUTH_SESSION_TTL_MS.');
     }
+    if (config.executionLeaseMs < config.workerHeartbeatMs * 3) {
+        throw new Error('EXECUTION_LEASE_MS must be at least three times WORKER_HEARTBEAT_MS.');
+    }
+    if (config.workerStaleMs < config.executionLeaseMs) {
+        throw new Error('WORKER_STALE_MS must be greater than or equal to EXECUTION_LEASE_MS.');
+    }
     if (env.NODE_ENV === 'production') {
         if (!config.authCookieSecure) {
             throw new Error('AUTH_COOKIE_SECURE must be true in production.');
@@ -50,6 +66,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         }
     }
     return config;
+}
+
+function workerQueues(value: string | undefined): string[] {
+    const queues = (value ?? 'default').split(',').map(item => item.trim().toLowerCase()).filter(Boolean);
+    if (queues.length === 0 || queues.some(queue => !/^[a-z][a-z0-9_-]{0,63}$/u.test(queue))) {
+        throw new Error('WORKER_QUEUES must contain comma-separated valid queue names.');
+    }
+    return [...new Set(queues)];
 }
 
 function commaSeparated(value: string | undefined, fallback: string[]): string[] {

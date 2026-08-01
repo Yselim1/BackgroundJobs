@@ -7,6 +7,7 @@ describe('dashboard routes', () => {
         expect(parseDashboardRoute('/logs/exec-1')).toEqual({ page: 'logs', executionId: 'exec-1' });
         expect(parseDashboardRoute('/audit')).toEqual({ page: 'audit' });
         expect(parseDashboardRoute('/attention')).toEqual({ page: 'attention' });
+        expect(parseDashboardRoute('/workers')).toEqual({ page: 'workers' });
         expect(parseDashboardRoute('/admin')).toEqual({ page: 'admin' });
     });
 

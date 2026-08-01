@@ -26,6 +26,7 @@ interface ExecutionRow {
     id: string;
     job_id: string;
     job_definition: Job;
+    job_version: number | null;
     input: Record<string, unknown>;
     trigger_type: ExecutionTrigger;
     status: ExecutionStatus;
@@ -38,6 +39,12 @@ interface ExecutionRow {
     error_code: string | null;
     error_message: string | null;
     skip_reason: string | null;
+    queue_name: string;
+    priority: number;
+    claimed_by_worker_id: string | null;
+    lease_expires_at: Date | null;
+    parent_execution_id: string | null;
+    automation_trigger_id: string | null;
     requested_by_type: ActorSummary['type'];
     requested_by_user_id: string | null;
     requested_by_label: string;
@@ -111,6 +118,7 @@ export interface ExecutionFilters {
 }
 
 export class ExecutionRepository {
+    private readonly directWorkerId: string = randomUUID();
     constructor(readonly pool: DatabasePool) {}
 
     async enqueueManual(
@@ -118,23 +126,15 @@ export class ExecutionRepository {
         input: Record<string, unknown> = {},
         actor?: AuthenticatedActor
     ): Promise<ExecutionSummary> {
-        try {
-            const executionId = await withTransaction(this.pool, async client => {
-                const result = await client.query<{ definition: Job }>(
-                    'SELECT definition FROM jobs WHERE id = $1 FOR UPDATE',
-                    [jobId]
-                );
-                const job = result.rows[0]?.definition;
-                if (job === undefined) throw new AppError('JOB_NOT_FOUND', `Job with id ${jobId} not found.`, 404);
-                return insertExecution(client, job, input, 'manual', null, 'queued', null, actor);
-            });
-            return (await this.getSummary(executionId))!;
-        } catch (error: unknown) {
-            if (isUniqueViolation(error, 'executions_one_active_per_job_uidx')) {
-                throw new AppError('JOB_ALREADY_ACTIVE', `Job with id ${jobId} already has a queued or running execution.`, 409);
-            }
-            throw error;
-        }
+        const executionId = await withTransaction(this.pool, async client => {
+            const result = await client.query<{ definition: Job; current_version: number }>(
+                'SELECT definition, current_version FROM jobs WHERE id = $1 FOR UPDATE', [jobId]
+            );
+            const row = result.rows[0];
+            if (row === undefined) throw new AppError('JOB_NOT_FOUND', `Job with id ${jobId} not found.`, 404);
+            return insertExecution(client, row.definition, input, 'manual', null, 'queued', null, actor, row.current_version);
+        });
+        return (await this.getSummary(executionId))!;
     }
 
     async enqueueManualWithClient(
@@ -143,7 +143,23 @@ export class ExecutionRepository {
         input: Record<string, unknown>,
         actor: AuthenticatedActor
     ): Promise<string> {
-        return insertExecution(client, job, input, 'manual', null, 'queued', null, actor);
+        const version = await client.query<{ current_version: number }>(
+            'SELECT current_version FROM jobs WHERE id = $1', [job.id]
+        );
+        return insertExecution(client, job, input, 'manual', null, 'queued', null, actor, version.rows[0]?.current_version ?? null);
+    }
+
+    async enqueueAutomationWithClient(
+        client: DatabaseClient,
+        job: Job,
+        jobVersion: number,
+        input: Record<string, unknown>,
+        trigger: 'webhook' | 'job_completion',
+        automationTriggerId: string,
+        parentExecutionId: string | null = null
+    ): Promise<string> {
+        return insertExecution(client, job, input, trigger, null, 'queued', null, undefined,
+            jobVersion, parentExecutionId, automationTriggerId);
     }
 
     async processDueJobs(now?: Date, limit = 100): Promise<number> {
@@ -151,8 +167,8 @@ export class ExecutionRepository {
             const effectiveNow = now ?? (await client.query<{ now: Date }>(
                 'SELECT clock_timestamp() AS now'
             )).rows[0]!.now;
-            const due = await client.query<{ id: string; definition: Job; schedule: string; timezone: string }>(
-                `SELECT id, definition, schedule, timezone
+            const due = await client.query<{ id: string; definition: Job; schedule: string; timezone: string; current_version: number }>(
+                `SELECT id, definition, schedule, timezone, current_version
                  FROM jobs
                  WHERE status = 'active' AND schedule IS NOT NULL AND next_run_at <= $1
                  ORDER BY next_run_at, id
@@ -167,7 +183,8 @@ export class ExecutionRepository {
                     [row.id]
                 );
                 const status: ExecutionStatus = (active.rowCount ?? 0) > 0 ? 'skipped' : 'queued';
-                await insertExecution(client, row.definition, {}, 'scheduled', occurrence.scheduledFor, status, status === 'skipped' ? 'overlap' : null);
+                await insertExecution(client, row.definition, {}, 'scheduled', occurrence.scheduledFor, status,
+                    status === 'skipped' ? 'overlap' : null, undefined, row.current_version);
                 await client.query(
                     'UPDATE jobs SET next_run_at = $2, updated_at = clock_timestamp() WHERE id = $1',
                     [row.id, occurrence.nextRunAt]
@@ -177,40 +194,50 @@ export class ExecutionRepository {
         });
     }
 
-    async claimOldestQueued(): Promise<ClaimedExecution | undefined> {
-        return withTransaction(this.pool, async client => {
-            const claimed = await client.query<ExecutionRow>(
-                `WITH candidate AS (
-                    SELECT id FROM executions
-                    WHERE status = 'queued'
-                    ORDER BY requested_at, id
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT 1
-                 )
-                 UPDATE executions e
-                 SET status = 'running', started_at = clock_timestamp(), updated_at = clock_timestamp()
-                 FROM candidate
-                 WHERE e.id = candidate.id
-                 RETURNING e.*`
-            );
-            const row = claimed.rows[0];
-            if (row === undefined || row.started_at === null) return undefined;
-            await client.query(
-                'UPDATE jobs SET last_run_at = $2, updated_at = clock_timestamp() WHERE id = $1',
-                [row.job_id, row.started_at]
-            );
-            await appendEvent(client, row.id, 'execution.running', {
-                jobId: row.job_id, startedAt: row.started_at.toISOString()
+    async claimOldestQueued(workerId = this.directWorkerId, queues: string[] = ['default'], leaseMs = 20_000): Promise<ClaimedExecution | undefined> {
+        try {
+            return await withTransaction(this.pool, async client => {
+                await client.query(
+                    `INSERT INTO worker_instances(id, name, queues, concurrency)
+                     VALUES ($1, 'direct repository worker', $2, 1)
+                     ON CONFLICT (id) DO UPDATE SET last_heartbeat_at = clock_timestamp(), stopped_at = NULL`,
+                    [workerId, queues]
+                );
+                const claimed = await client.query<ExecutionRow>(
+                    `WITH candidate AS (
+                        SELECT e.id FROM executions e
+                        WHERE e.status = 'queued' AND e.queue_name = ANY($2::text[])
+                          AND NOT EXISTS (
+                              SELECT 1 FROM executions running
+                              WHERE running.job_id = e.job_id AND running.status = 'running'
+                          )
+                        ORDER BY e.priority DESC, e.requested_at, e.id
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 1
+                     )
+                     UPDATE executions e
+                     SET status = 'running', started_at = clock_timestamp(), claimed_by_worker_id = $1,
+                         lease_expires_at = clock_timestamp() + ($3::integer * interval '1 millisecond'),
+                         updated_at = clock_timestamp()
+                     FROM candidate WHERE e.id = candidate.id RETURNING e.*`,
+                    [workerId, queues, leaseMs]
+                );
+                const row = claimed.rows[0];
+                if (row === undefined || row.started_at === null) return undefined;
+                await client.query(
+                    'UPDATE jobs SET last_run_at = $2, updated_at = clock_timestamp() WHERE id = $1',
+                    [row.job_id, row.started_at]
+                );
+                await appendEvent(client, row.id, 'execution.running', {
+                    jobId: row.job_id, workerId, queue: row.queue_name, startedAt: row.started_at.toISOString()
+                });
+                return { executionId: row.id, jobId: row.job_id, jobDefinition: row.job_definition,
+                    requestedAt: row.requested_at, startedAt: row.started_at, input: row.input };
             });
-            return {
-                executionId: row.id,
-                jobId: row.job_id,
-                jobDefinition: row.job_definition,
-                requestedAt: row.requested_at,
-                startedAt: row.started_at,
-                input: row.input
-            };
-        });
+        } catch (error: unknown) {
+            if (isUniqueViolation(error, 'executions_one_running_per_job_uidx')) return undefined;
+            throw error;
+        }
     }
 
     async getSummary(executionId: string): Promise<ExecutionSummary | undefined> {
@@ -415,6 +442,7 @@ export class ExecutionRepository {
                 });
                 await appendEvent(client, executionId, 'execution.cancelled', { reason: 'Execution cancelled before it started.' });
                 await enqueueTerminalWebhooks(client, cancelled.rows[0]!);
+                await enqueueTerminalAutomations(client, cancelled.rows[0]!);
                 return false;
             }
             if (execution.status === 'running') {
@@ -484,6 +512,7 @@ export class ExecutionRepository {
                 });
             }
             await enqueueTerminalWebhooks(client, row);
+            await enqueueTerminalAutomations(client, row);
         });
     }
 
@@ -649,8 +678,56 @@ export class ExecutionRepository {
                     }
                 });
                 await enqueueTerminalWebhooks(client, row);
+                await enqueueTerminalAutomations(client, row);
             }
             return ids.length;
+        });
+    }
+
+    async reconcileExpiredLeases(limit = 100): Promise<number> {
+        return withTransaction(this.pool, async client => {
+            const expired = await client.query<ExecutionRow>(
+                `WITH candidates AS (
+                    SELECT id FROM executions
+                    WHERE status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at < clock_timestamp())
+                    ORDER BY lease_expires_at NULLS FIRST, started_at
+                    FOR UPDATE SKIP LOCKED LIMIT $1
+                 )
+                 UPDATE executions e SET status = 'failed', finished_at = clock_timestamp(),
+                    duration_ms = GREATEST(0, floor(extract(epoch FROM (clock_timestamp() - started_at)) * 1000))::bigint,
+                    error_code = 'WORKER_LOST', error_message = 'The worker lease expired before execution completed.',
+                    updated_at = clock_timestamp()
+                 FROM candidates WHERE e.id = candidates.id RETURNING e.*`, [limit]
+            );
+            if (expired.rows.length === 0) return 0;
+            const ids = expired.rows.map(row => row.id);
+            await client.query(
+                `UPDATE execution_steps SET status = CASE WHEN status = 'running' THEN 'failed' ELSE 'cancelled' END,
+                    finished_at = clock_timestamp(), error_code = CASE WHEN status = 'running' THEN 'WORKER_LOST' ELSE NULL END,
+                    error_message = CASE WHEN status = 'running' THEN 'The worker lease expired during this step.' ELSE NULL END,
+                    reason = CASE WHEN status = 'pending' THEN 'The worker was lost before this step started.' ELSE reason END
+                 WHERE execution_id = ANY($1::uuid[]) AND status IN ('pending', 'running')`, [ids]
+            );
+            await client.query(
+                `UPDATE execution_attempts SET status = 'failed', finished_at = clock_timestamp(),
+                    error_code = 'WORKER_LOST', error_message = 'The worker lease expired during this attempt.'
+                 WHERE execution_id = ANY($1::uuid[]) AND status = 'running'`, [ids]
+            );
+            for (const row of expired.rows) {
+                await appendEvent(client, row.id, 'execution.failed', {
+                    status: 'failed', errorCode: 'WORKER_LOST',
+                    error: row.error_message, finishedAt: row.finished_at?.toISOString() ?? null
+                });
+                await recordExecutionFailureAttention(client, {
+                    executionId: row.id, jobId: row.job_id,
+                    reason: row.error_message ?? 'The worker lease expired before execution completed.',
+                    occurredAt: row.finished_at ?? row.requested_at,
+                    detailSnapshot: { errorCode: 'WORKER_LOST', trigger: row.trigger_type, input: row.input, workerLost: true }
+                });
+                await enqueueTerminalWebhooks(client, row);
+                await enqueueTerminalAutomations(client, row);
+            }
+            return expired.rows.length;
         });
     }
 }
@@ -663,25 +740,29 @@ async function insertExecution(
     scheduledFor: Date | null,
     status: ExecutionStatus,
     skipReason: string | null = null,
-    actor?: AuthenticatedActor
+    actor?: AuthenticatedActor,
+    jobVersion: number | null = null,
+    parentExecutionId: string | null = null,
+    automationTriggerId: string | null = null
 ): Promise<string> {
     const executionId = randomUUID();
     const terminal = status === 'skipped';
     const inserted = await client.query<ExecutionRow>(
         `INSERT INTO executions(
-            id, job_id, job_definition, input, trigger_type, status, scheduled_for,
-            finished_at, skip_reason, requested_by_type, requested_by_user_id, requested_by_label
+            id, job_id, job_definition, job_version, input, trigger_type, status, scheduled_for,
+            finished_at, skip_reason, requested_by_type, requested_by_user_id, requested_by_label,
+            queue_name, priority, parent_execution_id, automation_trigger_id
          )
          VALUES (
-            $1, $2, $3, $4, $5, $6, $7,
-            CASE WHEN $8 THEN clock_timestamp() ELSE NULL END, $9, $10, $11, $12
+            $1, $2, $3, $4, $5, $6, $7, $8,
+            CASE WHEN $9 THEN clock_timestamp() ELSE NULL END, $10, $11, $12, $13, $14, $15, $16, $17
          )
          RETURNING *`,
         [
-            executionId, job.id, job, input, trigger, status, scheduledFor, terminal, skipReason,
+            executionId, job.id, job, jobVersion, input, trigger, status, scheduledFor, terminal, skipReason,
             actor === undefined ? 'system' : actor.authType === 'session' ? 'user' : 'api_token',
-            actor?.userId ?? null,
-            actor?.email ?? 'system'
+            actor?.userId ?? null, actor?.email ?? 'system', job.QUEUE ?? 'default', job.PRIORITY ?? 0,
+            parentExecutionId, automationTriggerId
         ]
     );
     for (const step of [...job.STEPS].sort((a, b) => a.ORDER - b.ORDER)) {
@@ -697,7 +778,10 @@ async function insertExecution(
         requestedBy: actor?.email ?? 'system',
         ...(skipReason === null ? {} : { reason: skipReason })
     });
-    if (terminal) await enqueueTerminalWebhooks(client, inserted.rows[0]!);
+    if (terminal) {
+        await enqueueTerminalWebhooks(client, inserted.rows[0]!);
+        await enqueueTerminalAutomations(client, inserted.rows[0]!);
+    }
     return executionId;
 }
 
@@ -706,6 +790,11 @@ function mapSummary(row: ExecutionRow): ExecutionSummary {
         executionId: row.id,
         logId: row.id,
         jobId: row.job_id,
+        jobVersion: row.job_version,
+        queue: row.queue_name,
+        priority: row.priority,
+        parentExecutionId: row.parent_execution_id,
+        automationTriggerId: row.automation_trigger_id,
         trigger: row.trigger_type,
         status: row.status,
         scheduledFor: row.scheduled_for?.toISOString() ?? null,
@@ -778,6 +867,23 @@ async function enqueueTerminalWebhooks(client: DatabaseClient, row: ExecutionRow
                 deliveryId, row.id, eventType, subscriptionIndex, webhook.URL,
                 JSON.stringify(payload), webhook.SIGNING_SECRET ?? null
             ]
+        );
+    }
+}
+
+async function enqueueTerminalAutomations(client: DatabaseClient, row: ExecutionRow): Promise<void> {
+    const terminalStatuses = new Set<WebhookEventStatus>(['success', 'failed', 'cancelled', 'skipped']);
+    if (!terminalStatuses.has(row.status as WebhookEventStatus)) return;
+    const triggers = await client.query<{ id: string }>(
+        `SELECT id FROM automation_triggers
+         WHERE kind = 'job_completion' AND enabled AND source_job_id = $1 AND $2 = ANY(terminal_statuses)
+         ORDER BY created_at`, [row.job_id, row.status]
+    );
+    for (const trigger of triggers.rows) {
+        await client.query(
+            `INSERT INTO automation_trigger_events(id, trigger_id, source_execution_id, status)
+             VALUES ($1, $2, $3, 'pending') ON CONFLICT DO NOTHING`,
+            [randomUUID(), trigger.id, row.id]
         );
     }
 }

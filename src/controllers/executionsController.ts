@@ -6,7 +6,7 @@ import type { ExecutionStatus, ExecutionTrigger } from '../types/index.js';
 import { requirePermission } from '../security/middleware.js';
 
 const STATUSES = new Set<ExecutionStatus>(['queued', 'running', 'success', 'failed', 'cancelled', 'skipped']);
-const TRIGGERS = new Set<ExecutionTrigger>(['manual', 'scheduled']);
+const TRIGGERS = new Set<ExecutionTrigger>(['manual', 'scheduled', 'webhook', 'job_completion']);
 const TERMINAL_STATUSES = new Set<ExecutionStatus>(['success', 'failed', 'cancelled', 'skipped']);
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
 

@@ -6,8 +6,13 @@ describe('permission-aware navigation', () => {
         expect(dashboardNavigation(['attention:read'])).toEqual({
             attention: true,
             administration: false,
-            audit: false
+            audit: false,
+            workers: false
         });
+    });
+
+    it('shows Workers to platform readers', () => {
+        expect(dashboardNavigation(['platform:read']).workers).toBe(true);
     });
 
     it('shows Administration for either management permission', () => {

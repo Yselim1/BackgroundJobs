@@ -5,12 +5,12 @@ import { AttentionRepository } from '../repositories/AttentionRepository.js';
 
 interface CountRow { count: string; }
 interface StatusCountRow { status: string; count: string; }
-export function createPlatformController(pool: DatabasePool, workerConcurrency = 4): Router {
+export function createPlatformController(pool: DatabasePool, workerConcurrency = 4, workerStaleMs = 30_000): Router {
     const router = Router();
     const attention = new AttentionRepository(pool);
 
     router.get('/overview', route(async (_req, res) => {
-        const [clock, jobs, executions, webhooks, duration, operations, durableAttention] = await Promise.all([
+        const [clock, jobs, executions, webhooks, duration, operations, fleet, durableAttention] = await Promise.all([
             pool.query<{ now: Date }>('SELECT clock_timestamp() AS now'),
             pool.query<StatusCountRow>('SELECT status, count(*)::text AS count FROM jobs GROUP BY status'),
             pool.query<StatusCountRow>(
@@ -46,6 +46,12 @@ export function createPlatformController(pool: DatabasePool, workerConcurrency =
                     count(*) FILTER (WHERE status = 'failed' AND requested_at >= clock_timestamp() - interval '24 hours')::text AS failed_count
                  FROM executions`
             ),
+            pool.query<{ capacity: string }>(
+                `SELECT coalesce(sum(concurrency), 0)::text AS capacity FROM worker_instances
+                 WHERE stopped_at IS NULL
+                   AND last_heartbeat_at >= clock_timestamp() - ($1::integer * interval '1 millisecond')`,
+                [workerStaleMs]
+            ),
             attention.openOverview()
         ]);
         const jobCounts = statusMap(jobs.rows);
@@ -55,6 +61,7 @@ export function createPlatformController(pool: DatabasePool, workerConcurrency =
         const successCount = Number(operations.rows[0]?.success_count ?? 0);
         const failedCount = Number(operations.rows[0]?.failed_count ?? 0);
         const terminalCount = successCount + failedCount;
+        const liveCapacity = Number(fleet.rows[0]?.capacity ?? 0) || workerConcurrency;
         res.status(200).json({
             generatedAt: clock.rows[0]!.now.toISOString(),
             jobs: {
@@ -88,10 +95,10 @@ export function createPlatformController(pool: DatabasePool, workerConcurrency =
                 failed: webhookCounts.failed ?? 0
             },
             workers: {
-                capacity: workerConcurrency,
+                capacity: liveCapacity,
                 busy: running,
-                available: Math.max(0, workerConcurrency - running),
-                utilizationPercent: Math.round(Math.min(1, running / workerConcurrency) * 1000) / 10
+                available: Math.max(0, liveCapacity - running),
+                utilizationPercent: Math.round(Math.min(1, running / liveCapacity) * 1000) / 10
             },
             attention: {
                 openExecutionFailures: durableAttention.executionCount,

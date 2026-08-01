@@ -17,12 +17,33 @@ export function createJobsController(jobService: JobService): Router {
     }));
     router.post('/bulk-status', requirePermission('jobs:write'), route(async (req, res) => {
         const input = parseBulkStatus(req.body);
-        res.status(200).json({ items: await jobService.setJobStatuses(input.jobIds, input.status) });
+        res.status(200).json({ items: await jobService.setJobStatuses(input.jobIds, input.status, req.auth) });
     }));
-    router.post('/', requirePermission('jobs:write'), route(async (req, res) => { res.status(201).json(await jobService.createJob(req.body)); }));
+    router.post('/', requirePermission('jobs:write'), route(async (req, res) => {
+        const job = await jobService.createJob(req.body, req.auth);
+        res.setHeader('ETag', `"${job.version}"`).status(201).json(job);
+    }));
+    router.get('/:id/versions', requirePermission('jobs:read'), route(async (req, res) => {
+        const { page, limit } = parsePage(req.query.page, req.query.limit);
+        res.status(200).json(await jobService.listJobVersions(req.params.id as string, page, limit));
+    }));
+    router.get('/:id/versions/:version', requirePermission('jobs:read'), route(async (req, res) => {
+        res.status(200).json(await jobService.getJobVersion(req.params.id as string, positiveInteger(req.params.version, 'version')));
+    }));
+    router.post('/:id/rollback', requirePermission('jobs:write'), route(async (req, res) => {
+        const body = parseRollback(req.body);
+        const job = await jobService.rollbackJob(req.params.id as string, body.targetVersion, body.expectedVersion, req.auth);
+        res.setHeader('ETag', `"${job.version}"`).status(200).json(job);
+    }));
     router.get('/:id/plan', requirePermission('jobs:read'), route(async (req, res) => { res.status(200).json(await jobService.getExecutionPlan(req.params.id as string)); }));
-    router.get('/:id', requirePermission('jobs:read'), route(async (req, res) => { res.status(200).json(await jobService.getJobWithID(req.params.id as string)); }));
-    router.put('/:id', requirePermission('jobs:write'), route(async (req, res) => { res.status(200).json(await jobService.replaceJob(req.params.id as string, req.body)); }));
+    router.get('/:id', requirePermission('jobs:read'), route(async (req, res) => {
+        const job = await jobService.getJobWithID(req.params.id as string);
+        res.setHeader('ETag', `"${job.version}"`).status(200).json(job);
+    }));
+    router.put('/:id', requirePermission('jobs:write'), route(async (req, res) => {
+        const job = await jobService.replaceJob(req.params.id as string, req.body, parseIfMatch(req.get('If-Match')), req.auth);
+        res.setHeader('ETag', `"${job.version}"`).status(200).json(job);
+    }));
     router.delete('/:id', requirePermission('jobs:write'), route(async (req, res) => { await jobService.deleteJob(req.params.id as string); res.status(204).send(); }));
     router.post('/:id/run', requirePermission('jobs:run'), route(async (req, res) => {
         const execution = await jobService.startJob(req.params.id as string, parseRunInput(req.body), req.auth);
@@ -76,6 +97,34 @@ function parseRunInput(body: unknown): unknown {
         throw new AppError('INVALID_RUN_REQUEST', `Unsupported run request field: ${unsupported[0]}.`, 422);
     }
     return record.input;
+}
+
+function parseIfMatch(value: string | undefined): number {
+    if (value === undefined) throw new AppError('JOB_VERSION_REQUIRED', 'If-Match must contain the current job version.', 428);
+    return positiveInteger(value.replace(/^W\//u, '').replace(/^"|"$/gu, ''), 'If-Match');
+}
+
+function parseRollback(body: unknown): { targetVersion: number; expectedVersion: number } {
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+        throw new AppError('INVALID_ROLLBACK', 'Request body must be an object.', 422);
+    }
+    const value = body as Record<string, unknown>;
+    return { targetVersion: positiveInteger(value.targetVersion, 'targetVersion'), expectedVersion: positiveInteger(value.expectedVersion, 'expectedVersion') };
+}
+
+function parsePage(pageValue: unknown, limitValue: unknown): { page: number; limit: number } {
+    const page = pageValue === undefined ? 1 : positiveInteger(pageValue, 'page');
+    const limit = limitValue === undefined ? 25 : positiveInteger(limitValue, 'limit');
+    if (limit > 100) throw new AppError('INVALID_LIMIT', 'limit cannot exceed 100.', 400);
+    return { page, limit };
+}
+
+function positiveInteger(value: unknown, name: string): number {
+    const parsed = typeof value === 'string' && /^\d+$/u.test(value) ? Number(value) : value;
+    if (typeof parsed !== 'number' || !Number.isSafeInteger(parsed) || parsed < 1) {
+        throw new AppError(`INVALID_${name.toUpperCase()}`, `${name} must be a positive integer.`, 400);
+    }
+    return parsed;
 }
 
 type Handler = (req: Request, res: Response) => Promise<void>;

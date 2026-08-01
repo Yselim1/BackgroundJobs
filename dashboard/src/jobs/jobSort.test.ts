@@ -24,6 +24,7 @@ describe('job sorting', () => {
 function job(id: string, createdAt: string): Job {
     return {
         id,
+        version: 1,
         name: id,
         status: 'inactive',
         timezone: 'UTC',

@@ -41,6 +41,7 @@ const VALUE_CONDITION_OPERATORS = new Set<WorkflowConditionOperator>([
 const RESERVED_CONTEXT_ROOTS = new Set(['input', 'secrets', 'item', 'index']);
 const SECRET_NAME = /^[A-Z][A-Z0-9_]{1,63}$/u;
 const SECRET_TEMPLATE = /\{\{\s*secrets\.([^{}\s]+)\s*\}\}/gu;
+const QUEUE_NAME = /^[a-z][a-z0-9_-]{0,63}$/u;
 
 export class JobValidationError extends Error {
     readonly issues: ValidationIssue[];
@@ -71,6 +72,9 @@ export function validateJobDefinition(input: unknown): JobValidationResult {
     }
     if (Object.hasOwn(normalizedInput, 'next_run')) {
         addIssue(errors, 'next_run', 'READ_ONLY_FIELD', 'next_run is read-only.');
+    }
+    if (Object.hasOwn(normalizedInput, 'version')) {
+        addIssue(errors, 'version', 'READ_ONLY_FIELD', 'version is read-only.');
     }
     validateJobStatus(normalizedInput.status, errors);
     validateSchedule(normalizedInput.schedule, normalizedInput.timezone, errors);
@@ -243,6 +247,7 @@ function normalizeJobDefinition(input: unknown): unknown {
     if(normalizedJob.status === undefined) {
         normalizedJob.status = 'active';
     }
+    if (typeof normalizedJob.QUEUE === 'string') normalizedJob.QUEUE = normalizedJob.QUEUE.trim().toLowerCase();
 
     if (typeof normalizedJob.timezone === 'string') {
         normalizedJob.timezone = normalizedJob.timezone.trim();
@@ -352,6 +357,12 @@ function validateSchedule(value: unknown, timezoneValue: unknown, errors: Valida
 }
 
 function validateExecutionSettings(job: Record<string, unknown>, errors: ValidationIssue[]): void {
+    if (job.QUEUE !== undefined && (typeof job.QUEUE !== 'string' || !QUEUE_NAME.test(job.QUEUE))) {
+        addIssue(errors, 'QUEUE', 'INVALID_QUEUE', 'QUEUE must start with a lowercase letter and contain only lowercase letters, numbers, underscores, or hyphens.');
+    }
+    if (job.PRIORITY !== undefined && (typeof job.PRIORITY !== 'number' || !Number.isInteger(job.PRIORITY) || job.PRIORITY < -100 || job.PRIORITY > 100)) {
+        addIssue(errors, 'PRIORITY', 'INVALID_PRIORITY', 'PRIORITY must be an integer between -100 and 100.');
+    }
     if (job.TIMEOUT_MS !== undefined &&
         (typeof job.TIMEOUT_MS !== 'number' || !Number.isInteger(job.TIMEOUT_MS) || job.TIMEOUT_MS <= 0)
     ) {

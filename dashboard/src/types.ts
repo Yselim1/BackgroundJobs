@@ -213,6 +213,8 @@ export interface JobDefinition {
     description?: string;
     schedule?: string;
     timezone: string;
+    QUEUE?: string;
+    PRIORITY?: number;
     TIMEOUT_MS?: number;
     MAX_CONCURRENCY?: number;
     FAILURE_POLICY?: 'fail_fast' | 'continue_independent';
@@ -222,6 +224,7 @@ export interface JobDefinition {
 }
 
 export interface Job extends JobDefinition {
+    version: number;
     next_run: string | null;
     last_run: string | null;
     created_at?: string;
@@ -237,7 +240,12 @@ export interface ValidationIssue {
 export interface ExecutionSummary {
     executionId: string;
     jobId: string;
-    trigger: 'manual' | 'scheduled';
+    jobVersion: number | null;
+    queue: string;
+    priority: number;
+    parentExecutionId: string | null;
+    automationTriggerId: string | null;
+    trigger: 'manual' | 'scheduled' | 'webhook' | 'job_completion';
     status: ExecutionStatus;
     scheduledFor: string | null;
     requestedAt: string;
@@ -289,7 +297,7 @@ export interface ExecutionPage {
 export interface ExecutionFilters {
     jobId?: string;
     status?: ExecutionStatus;
-    trigger?: 'manual' | 'scheduled';
+    trigger?: 'manual' | 'scheduled' | 'webhook' | 'job_completion';
     from?: string;
     to?: string;
     limit?: number;
@@ -330,3 +338,17 @@ export interface JobPlan {
         }>;
     }>;
 }
+
+export interface JobRevisionSummary {
+    jobId: string;
+    version: number;
+    changeType: 'create' | 'update' | 'status' | 'rollback' | 'import';
+    createdBy: { type: 'system' | 'user' | 'api_token'; userId: string | null; label: string };
+    restoredFromVersion: number | null;
+    createdAt: string;
+}
+export interface JobRevision extends JobRevisionSummary { definition: JobDefinition; }
+export interface WorkerInstance { workerId: string; name: string; queues: string[]; concurrency: number; desiredState: 'accepting' | 'draining'; state: 'online' | 'draining' | 'drained' | 'offline' | 'stopped'; running: number; startedAt: string; lastHeartbeatAt: string; stoppedAt: string | null; }
+export interface QueueSummary { name: string; queued: number; running: number; workers: number; capacity: number; }
+export interface AutomationTrigger { triggerId: string; targetJobId: string; kind: 'webhook' | 'job_completion'; name: string; enabled: boolean; sourceJobId: string | null; terminalStatuses: Array<'success' | 'failed' | 'cancelled' | 'skipped'> | null; tokenSuffix: string | null; createdAt: string; updatedAt: string; lastTriggeredAt: string | null; }
+export interface AutomationTriggerEvent { eventId: string; triggerId: string; sourceExecutionId: string | null; queuedExecutionId: string | null; status: 'pending' | 'queued' | 'skipped' | 'failed'; reason: string | null; attemptCount: number; createdAt: string; updatedAt: string; }

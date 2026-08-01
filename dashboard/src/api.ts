@@ -12,6 +12,8 @@ import type {
     Job,
     JobDefinition,
     JobPlan,
+    JobRevision,
+    JobRevisionSummary,
     RoleSummary,
     ManagedSecret,
     PageResponse,
@@ -23,6 +25,7 @@ import type {
     UserAccessSummary,
     ValidationIssue,
     WebhookDelivery
+    ,WorkerInstance, QueueSummary, AutomationTrigger, AutomationTriggerEvent
 } from './types';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/u, '') ?? '';
@@ -248,13 +251,34 @@ export async function createJob(definition: JobDefinition): Promise<Job> {
     });
 }
 
-export async function replaceJob(jobId: string, definition: JobDefinition): Promise<Job> {
+export async function replaceJob(jobId: string, definition: JobDefinition, version: number): Promise<Job> {
     return request('/api/jobs/' + encodeURIComponent(jobId), {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'If-Match': `"${version}"` },
         body: JSON.stringify(definition)
     });
 }
+
+export function getJobVersions(jobId: string, page = 1, limit = 25): Promise<PageResponse<JobRevisionSummary>> {
+    return request(`/api/jobs/${encodeURIComponent(jobId)}/versions?page=${page}&limit=${limit}`);
+}
+export function getJobVersion(jobId: string, version: number): Promise<JobRevision> {
+    return request(`/api/jobs/${encodeURIComponent(jobId)}/versions/${version}`);
+}
+export function rollbackJob(jobId: string, targetVersion: number, expectedVersion: number): Promise<Job> {
+    return request(`/api/jobs/${encodeURIComponent(jobId)}/rollback`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targetVersion, expectedVersion }) });
+}
+export async function getWorkers(): Promise<WorkerInstance[]> { return (await request<{ items: WorkerInstance[] }>('/api/workers')).items; }
+export async function getQueues(): Promise<QueueSummary[]> { return (await request<{ items: QueueSummary[] }>('/api/queues')).items; }
+export function drainWorker(workerId: string): Promise<WorkerInstance> { return request(`/api/workers/${encodeURIComponent(workerId)}/drain`, { method: 'POST' }); }
+export function resumeWorker(workerId: string): Promise<WorkerInstance> { return request(`/api/workers/${encodeURIComponent(workerId)}/resume`, { method: 'POST' }); }
+export async function getAutomationTriggers(jobId: string): Promise<AutomationTrigger[]> { return (await request<{ items: AutomationTrigger[] }>(`/api/jobs/${encodeURIComponent(jobId)}/triggers`)).items; }
+export function createWebhookTrigger(jobId: string, name: string): Promise<{ trigger: AutomationTrigger; token: string }> { return request(`/api/jobs/${encodeURIComponent(jobId)}/triggers`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'webhook', name }) }); }
+export function createChainTrigger(jobId: string, name: string, sourceJobId: string, terminalStatuses: string[]): Promise<AutomationTrigger> { return request(`/api/jobs/${encodeURIComponent(jobId)}/triggers`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'job_completion', name, sourceJobId, terminalStatuses }) }); }
+export function updateAutomationTrigger(jobId: string, triggerId: string, input: { name?: string; enabled?: boolean; terminalStatuses?: string[] }): Promise<AutomationTrigger> { return request(`/api/jobs/${encodeURIComponent(jobId)}/triggers/${encodeURIComponent(triggerId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) }); }
+export function rotateAutomationToken(jobId: string, triggerId: string): Promise<{ trigger: AutomationTrigger; token: string }> { return request(`/api/jobs/${encodeURIComponent(jobId)}/triggers/${encodeURIComponent(triggerId)}/rotate-token`, { method: 'POST' }); }
+export async function deleteAutomationTrigger(jobId: string, triggerId: string): Promise<void> { await request(`/api/jobs/${encodeURIComponent(jobId)}/triggers/${encodeURIComponent(triggerId)}`, { method: 'DELETE' }); }
+export function getAutomationEvents(jobId: string, page = 1): Promise<PageResponse<AutomationTriggerEvent>> { return request(`/api/jobs/${encodeURIComponent(jobId)}/trigger-events?page=${page}&limit=25`); }
 
 export async function bulkSetJobStatus(
     jobIds: string[],

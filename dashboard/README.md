@@ -24,12 +24,14 @@ The production bundle is written to `dashboard/dist`. Keep it on the same origin
 
 Set `VITE_API_BASE_URL` at build time only when the API is intentionally hosted on another origin.
 
-The dashboard never stores session or API tokens in browser storage. Login uses the backend's `HttpOnly` session cookie, mutating requests attach the CSRF cookie value as `X-CSRF-Token`, and live execution streams send the same credentials. Temporary passwords open only the mandatory password-change screen. Viewer, operator, and admin roles determine which controls are shown. The Jobs and Attention pages are available to every authenticated user; operators can run jobs, while administrators can create, validate, edit, duplicate, export, and bulk activate/deactivate definitions. Administrators can remediate attention items and manage users, credential metadata, roles, password resets, encrypted-secret lifecycle, and runtime health from the dedicated Administration page.
+The dashboard never stores session or API tokens in browser storage. Login uses the backend's `HttpOnly` session cookie, mutating requests attach the CSRF cookie value as `X-CSRF-Token`, and live execution streams send the same credentials. Temporary passwords open only the mandatory password-change screen. Every role can inspect job revisions, automations, workers, and queues; administrators manage definitions, triggers, webhook token rotation, worker drain state, security, and operational remediation.
 
 ## Operations workspace
 
 - `/jobs` provides URL-persisted search, status, scheduling, executor, timezone, and sort controls.
 - `/jobs/:jobId` shows the definition settings, dependency levels, and recent executions.
+- `/jobs/:jobId?tab=versions|automations` shows immutable revision diffs/rollback or event-trigger configuration/history.
+- `/workers` shows queue backlog, fleet capacity, leases, and administrator drain/resume controls.
 - `/logs` filters durable history by job, status, trigger, time range, and oldest/newest ordering.
 - `/logs/:executionId` deep-links to actor, input, cancellation, step/attempt, output, snapshot, and webhook details.
 - `/attention` provides URL-persisted Open, Ignored, and Resolved views with kind, search, inclusive day range, and exact server pagination.

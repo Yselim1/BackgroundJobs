@@ -10,7 +10,9 @@ import { getSchemaVersions, migrate, readMigrations } from '../../src/db/migrati
 import { createPool, type DatabasePool } from '../../src/db/pool.js';
 import { loadConfig } from '../../src/config.js';
 import { ExecutionRepository } from '../../src/repositories/ExecutionRepository.js';
+import { AutomationRepository } from '../../src/repositories/AutomationRepository.js';
 import { JobRepository } from '../../src/repositories/JobRepository.js';
+import { WorkerRepository } from '../../src/repositories/WorkerRepository.js';
 import { WebhookRepository } from '../../src/repositories/WebhookRepository.js';
 import { JobExecutionManager } from '../../src/services/JobExecutionManager.js';
 import { JobService } from '../../src/services/JobService.js';
@@ -56,7 +58,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-    await pool.query('TRUNCATE execution_attempts, execution_steps, executions, jobs CASCADE');
+    await pool.query('TRUNCATE execution_attempts, execution_steps, executions, worker_instances, jobs CASCADE');
 });
 
 afterAll(async () => {
@@ -225,13 +227,14 @@ describe('PostgreSQL repositories and lifecycle', () => {
         expect(created.every(item => item.next_run === null)).toBe(true);
     });
 
-    it('claims oldest work, protects active jobs, and reconciles interrupted executions', async () => {
+    it('claims oldest work, backlogs repeated requests, and reconciles interrupted executions', async () => {
         await jobs.create(job('first', 'inactive'));
         await jobs.create(job('second', 'inactive'));
         const first = await executions.enqueueManual('first');
         await new Promise(resolve => setTimeout(resolve, 5));
         await executions.enqueueManual('second');
-        await expect(executions.enqueueManual('first')).rejects.toMatchObject({ code: 'JOB_ALREADY_ACTIVE' });
+        const repeated = await executions.enqueueManual('first');
+        expect(repeated.status).toBe('queued');
         const claimed = await executions.claimOldestQueued();
         expect(claimed?.executionId).toBe(first.executionId);
         expect(await executions.reconcileInterrupted()).toBe(1);
@@ -476,6 +479,7 @@ describe('HTTP execution API', () => {
         await authenticatedRequest(app).post('/api/jobs').send(definition).expect(201)
             .expect(response => expect(response.body.next_run).toBeNull());
         await authenticatedRequest(app).put('/api/jobs/managed-status')
+            .set('If-Match', '"1"')
             .send({ ...definition, status: 'active' })
             .expect(200)
             .expect(response => {
@@ -483,6 +487,7 @@ describe('HTTP execution API', () => {
                 expect(response.body.next_run).toBeTypeOf('string');
             });
         await authenticatedRequest(app).put('/api/jobs/managed-status')
+            .set('If-Match', '"2"')
             .send(definition)
             .expect(200)
             .expect(response => {
@@ -542,8 +547,8 @@ describe('HTTP execution API', () => {
         expect(secondQueued.executionId).not.toBe(queued.executionId);
         await authenticatedRequest(app).post('/api/jobs/bulk-status')
             .send({ jobIds: ['bulk-one'], status: 'inactive' })
-            .expect(409)
-            .expect(response => expect(response.body.code).toBe('JOB_IS_ACTIVE'));
+            .expect(200)
+            .expect(response => expect(response.body.items[0].status).toBe('inactive'));
     });
 
     it('persists runtime input, exposes filtered history, and replays durable SSE events', async () => {
@@ -836,7 +841,7 @@ describe('HTTP execution API', () => {
         await authenticatedRequest(app).get('/api/attention/00000000-0000-4000-8000-000000000000').expect(404);
     });
 
-    it('keeps rerun attention open when the current job is missing or already active', async () => {
+    it('keeps rerun attention open when the current job is missing and queues behind active work', async () => {
         const manager = new JobExecutionManager(executions, undefined, 1, 1000);
         const app = createApp({ pool, jobs: new JobService(jobs, executions), executions, manager, security });
 
@@ -857,10 +862,10 @@ describe('HTTP execution API', () => {
         await executions.finishExecution(activeFailure.executionId, 'failed', 'FAILED', 'Active job failure');
         const activeItem = (await authenticatedRequest(app).get('/api/attention?search=attention-active-job').expect(200)).body.items[0];
         await executions.enqueueManual('attention-active-job');
-        await authenticatedRequest(app).post('/api/attention/' + activeItem.attentionId + '/rerun').expect(409)
-            .expect(response => expect(response.body.code).toBe('ATTENTION_JOB_ACTIVE'));
+        await authenticatedRequest(app).post('/api/attention/' + activeItem.attentionId + '/rerun').expect(200)
+            .expect(response => expect(response.body.state).toBe('resolved'));
         await authenticatedRequest(app).get('/api/attention/' + activeItem.attentionId).expect(200)
-            .expect(response => expect(response.body.state).toBe('open'));
+            .expect(response => expect(response.body.state).toBe('resolved'));
     });
 
     it('retries exact webhook deliveries, preserves attempts, and reopens repeated failures', async () => {
@@ -1517,6 +1522,92 @@ describe('Security and authentication lifecycle', () => {
             'UPDATE security_audit_events SET action = $2 WHERE id = $1',
             [auditId, 'tampered']
         )).rejects.toThrow(/append-only/u);
+    });
+
+    it('creates immutable job revisions, rejects stale HTTP edits, and rolls back without changing activation', async () => {
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000);
+        const app = createApp({ pool, jobs: new JobService(jobs, executions), executions, manager, security });
+        const original = job('versioned-job', 'inactive');
+        const created = await authenticatedRequest(app).post('/api/jobs').send(original).expect(201);
+        expect(created.body.version).toBe(1);
+        await authenticatedRequest(app).put('/api/jobs/versioned-job').send({ ...original, name: 'No precondition' })
+            .expect(428).expect(response => expect(response.body.code).toBe('JOB_VERSION_REQUIRED'));
+        const updatedDefinition = { ...original, name: 'Updated definition', status: 'active' as const };
+        const updated = await authenticatedRequest(app).put('/api/jobs/versioned-job').set('If-Match', '"1"')
+            .send(updatedDefinition).expect(200);
+        expect(updated.body).toMatchObject({ version: 2, name: 'Updated definition', status: 'active' });
+        await authenticatedRequest(app).put('/api/jobs/versioned-job').set('If-Match', '"1"')
+            .send(updatedDefinition).expect(409)
+            .expect(response => expect(response.body).toMatchObject({ code: 'JOB_VERSION_CONFLICT', details: { currentVersion: 2 } }));
+        await authenticatedRequest(app).get('/api/jobs/versioned-job/versions?page=1&limit=25').expect(200)
+            .expect(response => expect(response.body).toMatchObject({ total: 2, items: [{ version: 2 }, { version: 1 }] }));
+        const rolledBack = await authenticatedRequest(app).post('/api/jobs/versioned-job/rollback')
+            .send({ targetVersion: 1, expectedVersion: 2 }).expect(200);
+        expect(rolledBack.body).toMatchObject({ version: 3, name: original.name, status: 'active' });
+        const queued = await executions.enqueueManual('versioned-job');
+        expect(queued.jobVersion).toBe(3);
+    });
+
+    it('routes priority backlogs through registered worker queues and recovers expired leases', async () => {
+        await jobs.create({ ...job('low-priority', 'inactive'), QUEUE: 'alpha', PRIORITY: -10 });
+        await jobs.create({ ...job('high-priority', 'inactive'), QUEUE: 'alpha', PRIORITY: 50 });
+        const low = await executions.enqueueManual('low-priority');
+        const high = await executions.enqueueManual('high-priority');
+        const repeatedHigh = await executions.enqueueManual('high-priority');
+        const workers = new WorkerRepository(pool, 30_000);
+        const workerId = await workers.register('integration-alpha', ['alpha'], 2);
+        expect((await executions.claimOldestQueued(workerId, ['alpha'], 20_000))?.executionId).toBe(high.executionId);
+        expect((await executions.claimOldestQueued(workerId, ['alpha'], 20_000))?.executionId).toBe(low.executionId);
+        expect(await executions.claimOldestQueued(workerId, ['alpha'], 20_000)).toBeUndefined();
+        expect((await workers.queues()).find(queue => queue.name === 'alpha')).toMatchObject({ queued: 1, running: 2 });
+        await pool.query(`UPDATE executions SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE id = ANY($1::uuid[])`, [[high.executionId, low.executionId]]);
+        expect(await executions.reconcileExpiredLeases()).toBe(2);
+        expect((await executions.getSummary(high.executionId))?.error?.code).toBe('WORKER_LOST');
+        expect((await executions.claimOldestQueued(workerId, ['alpha'], 20_000))?.executionId).toBe(repeatedHigh.executionId);
+        expect((await workers.setDesiredState(workerId, 'draining')).desiredState).toBe('draining');
+        expect((await workers.setDesiredState(workerId, 'accepting')).desiredState).toBe('accepting');
+    });
+
+    it('authenticates idempotent webhooks and durably chains terminal job output without cycles', async () => {
+        await jobs.create(job('event-source', 'active'));
+        await jobs.create(job('event-target', 'active'));
+        const automations = new AutomationRepository(pool, executions);
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000);
+        const app = createApp({ pool, jobs: new JobService(jobs, executions), executions, manager, security, automations });
+        const chain = await authenticatedRequest(app).post('/api/jobs/event-target/triggers')
+            .send({ kind: 'job_completion', name: 'After source', sourceJobId: 'event-source', terminalStatuses: ['success'] })
+            .expect(201);
+        const source = await executions.enqueueManual('event-source', { accountId: 42 });
+        expect((await executions.claimOldestQueued())?.executionId).toBe(source.executionId);
+        await executions.stepFinished(source.executionId, { stepId: 'only', stepName: 'Only', stepType: 'SCRIPT', status: 'success', attempts: [], output: { ok: true } });
+        await executions.finishExecution(source.executionId, 'success', null, null);
+        expect(await automations.dispatchOne()).toBe(true);
+        const chained = await executions.list({ jobId: 'event-target', trigger: 'job_completion', limit: 10 });
+        expect(chained.items).toHaveLength(1);
+        const chainedDetail = await executions.getDetail(chained.items[0]!.executionId);
+        expect(chainedDetail?.input).toMatchObject({
+            event: { triggerId: chain.body.triggerId, sourceExecutionId: source.executionId, status: 'success' },
+            sourceInput: { accountId: 42 }, stepOutputs: { only: { ok: true } }
+        });
+        await authenticatedRequest(app).post('/api/jobs/event-source/triggers')
+            .send({ kind: 'job_completion', name: 'Cycle', sourceJobId: 'event-target', terminalStatuses: ['success'] })
+            .expect(409).expect(response => expect(response.body.code).toBe('AUTOMATION_CYCLE'));
+
+        const webhook = await authenticatedRequest(app).post('/api/jobs/event-target/triggers')
+            .send({ kind: 'webhook', name: 'Inbound test' }).expect(201);
+        expect(webhook.body.token).toMatch(/^bj_hook_/u);
+        const hookPath = '/hooks/' + webhook.body.trigger.triggerId;
+        await request(app).post(hookPath).send({ hello: 'world' }).expect(401);
+        const first = await request(app).post(hookPath).set('Authorization', 'Bearer ' + webhook.body.token)
+            .set('Idempotency-Key', 'same-event').send({ hello: 'world' }).expect(202);
+        const duplicate = await request(app).post(hookPath).set('Authorization', 'Bearer ' + webhook.body.token)
+            .set('Idempotency-Key', 'same-event').send({ hello: 'world' }).expect(202);
+        expect(duplicate.body.executionId).toBe(first.body.executionId);
+        const stored = await pool.query<{ token_hash: Buffer }>('SELECT token_hash FROM automation_triggers WHERE id = $1', [webhook.body.trigger.triggerId]);
+        expect(stored.rows[0]?.token_hash.toString('utf8')).not.toContain(webhook.body.token);
+        await jobs.setStatuses(['event-target'], 'inactive');
+        await request(app).post(hookPath).set('Authorization', 'Bearer ' + webhook.body.token)
+            .send({ hello: 'later' }).expect(409).expect(response => expect(response.body.code).toBe('JOB_INACTIVE'));
     });
 });
 

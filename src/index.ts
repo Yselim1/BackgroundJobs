@@ -4,9 +4,12 @@ import { loadConfig } from './config.js';
 import { assertSchemaCurrent } from './db/migrations.js';
 import { createPool } from './db/pool.js';
 import { ExecutionRepository } from './repositories/ExecutionRepository.js';
+import { AutomationRepository } from './repositories/AutomationRepository.js';
 import { JobRepository } from './repositories/JobRepository.js';
 import { WebhookRepository } from './repositories/WebhookRepository.js';
+import { WorkerRepository } from './repositories/WorkerRepository.js';
 import { JobExecutionManager } from './services/JobExecutionManager.js';
+import { AutomationDispatcher } from './services/AutomationDispatcher.js';
 import { JobService } from './services/JobService.js';
 import { WebhookDispatcher } from './services/WebhookDispatcher.js';
 import { createSecurityRuntime } from './security/runtime.js';
@@ -18,14 +21,18 @@ try {
     await assertSchemaCurrent(pool);
     const jobRepository = new JobRepository(pool);
     const executionRepository = new ExecutionRepository(pool);
+    const automationRepository = new AutomationRepository(pool, executionRepository);
     const webhookRepository = new WebhookRepository(pool);
     const security = createSecurityRuntime(pool, config);
+    const workerRepository = new WorkerRepository(pool, config.workerStaleMs);
     const manager = new JobExecutionManager(
         executionRepository,
         undefined,
         config.workerConcurrency,
         config.schedulerPollMs,
-        security.secrets
+        security.secrets,
+        { repository: workerRepository, ...(config.workerName === undefined ? {} : { name: config.workerName }), queues: config.workerQueues,
+            heartbeatMs: config.workerHeartbeatMs, leaseMs: config.executionLeaseMs }
     );
     const webhookDispatcher = new WebhookDispatcher(webhookRepository, {
         concurrency: config.webhookConcurrency,
@@ -35,12 +42,15 @@ try {
         secrets: security.secrets,
         ...(config.webhookSigningKey === undefined ? {} : { signingKey: config.webhookSigningKey })
     });
+    const automationDispatcher = new AutomationDispatcher(automationRepository);
     const jobs = new JobService(jobRepository, executionRepository);
     await manager.start();
     try {
         await webhookDispatcher.start();
+        await automationDispatcher.start();
     } catch (error: unknown) {
         await manager.shutdown(0);
+        await automationDispatcher.shutdown();
         throw error;
     }
     const server = createServer(createApp({
@@ -49,6 +59,8 @@ try {
         executions: executionRepository,
         manager,
         webhookDispatcher,
+        automations: automationRepository,
+        automationDispatcher,
         security
     }));
     server.listen(config.port, () => console.log(`Background Job Server is running on http://localhost:${config.port}`));
@@ -60,7 +72,8 @@ try {
         server.close();
         await Promise.all([
             manager.shutdown(config.shutdownGraceMs),
-            webhookDispatcher.shutdown()
+            webhookDispatcher.shutdown(),
+            automationDispatcher.shutdown()
         ]);
         await pool.end();
     };

@@ -23,6 +23,7 @@ import { formatDuration, formatRelativeTime, titleCase } from './format';
 import { JobsPage } from './jobs/JobsPage';
 import { JobDetailPage } from './jobs/JobDetailPage';
 import { LogsPage } from './logs/LogsPage';
+import { WorkersPage } from './workers/WorkersPage';
 import { Pagination } from './PageControls';
 import { dashboardNavigation } from './permissions';
 import { navigate, parseDashboardRoute, type DashboardRoute } from './routes';
@@ -123,6 +124,8 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
     const canReadAttention = navigation.attention;
     const canManageAttention = props.session.permissions.includes('attention:manage');
     const canViewAdmin = navigation.administration;
+    const canViewWorkers = navigation.workers;
+    const canManageWorkers = props.session.permissions.includes('workers:manage');
 
     const refresh = useCallback(async (quiet = false) => {
         if (!quiet) setLoading(true);
@@ -255,6 +258,7 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                         Jobs <span>{jobs.length}</span>
                     </a>
                     <a href="/logs" aria-current={route.page === 'logs' ? 'page' : undefined}>Logs</a>
+                    {canViewWorkers && <a href="/workers" aria-current={route.page === 'workers' ? 'page' : undefined}>Workers</a>}
                     {canReadAttention && <a href="/attention" aria-current={route.page === 'attention' ? 'page' : undefined}>Attention</a>}
                     {canReadAudit && <a href="/audit" aria-current={route.page === 'audit' ? 'page' : undefined}>Audit</a>}
                     {canViewAdmin && <a href="/admin" aria-current={route.page === 'admin' ? 'page' : undefined}>Administration</a>}
@@ -405,11 +409,13 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                 ) : route.page === 'job-detail' ? (
                     <JobDetailPage
                         job={jobs.find(job => job.id === route.jobId)}
+                        jobs={jobs}
                         canRun={canRun}
                         canWrite={canWriteJobs}
                         liveVersion={liveVersion}
                         runBusy={busy}
                         onRun={handleRun}
+                        onChanged={() => refresh(true)}
                         onOpenExecution={openExecution}
                         onError={setError}
                     />
@@ -423,6 +429,8 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                     ) : (
                         <section className="page-heading"><div><p className="eyebrow">Restricted</p><h1>Attention</h1><p>You do not have permission to inspect attention items.</p></div></section>
                     )
+                ) : route.page === 'workers' ? (
+                    <WorkersPage canManage={canManageWorkers} onError={setError} />
                 ) : route.page === 'admin' ? (
                     <AdminPage permissions={props.session.permissions} onError={setError} />
                 ) : route.page === 'audit' ? (

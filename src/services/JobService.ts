@@ -1,7 +1,7 @@
 import { AppError } from '../errors.js';
 import { ExecutionRepository } from '../repositories/ExecutionRepository.js';
 import { JobRepository } from '../repositories/JobRepository.js';
-import type { AuthenticatedActor, ExecutionSummary, Job, JobExecutionPlan, JobStatus, JobValidationResult, JobView, Step } from '../types/index.js';
+import type { AuthenticatedActor, ExecutionSummary, Job, JobExecutionPlan, JobRevision, JobRevisionSummary, JobStatus, JobValidationResult, JobView, PageResponse, Step } from '../types/index.js';
 import { buildDependencyLevels } from '../utils/jobGraph.js';
 import { normalizeExecutionInput } from '../utils/executionInput.js';
 import { assertValidJobDefinition, JobValidationError, validateJobDefinition } from '../utils/jobValidator.js';
@@ -12,11 +12,11 @@ export class JobService {
 
     validateJob(input: unknown): JobValidationResult { return validateJobDefinition(input); }
 
-    async createJob(input: unknown): Promise<JobView> {
-        return this.jobs.create(assertValidJobDefinition(input));
+    async createJob(input: unknown, actor?: AuthenticatedActor): Promise<JobView> {
+        return this.jobs.create(assertValidJobDefinition(input), undefined, actor);
     }
 
-    async replaceJob(jobId: string, input: unknown): Promise<JobView> {
+    async replaceJob(jobId: string, input: unknown, expectedVersion: number, actor?: AuthenticatedActor): Promise<JobView> {
         const replacement = assertValidJobDefinition(input);
         if (replacement.id !== jobId) {
             throw new JobValidationError([{
@@ -24,13 +24,25 @@ export class JobService {
                 message: `Body job ID ${replacement.id} does not match path job ID ${jobId}.`
             }]);
         }
-        return this.jobs.replace(jobId, replacement);
+        return this.jobs.replace(jobId, replacement, expectedVersion, undefined, actor);
     }
 
     async deleteJob(jobId: string): Promise<void> { await this.jobs.delete(jobId); }
 
-    async setJobStatuses(jobIds: string[], status: JobStatus): Promise<JobView[]> {
-        return this.jobs.setStatuses(jobIds, status);
+    async setJobStatuses(jobIds: string[], status: JobStatus, actor?: AuthenticatedActor): Promise<JobView[]> {
+        return this.jobs.setStatuses(jobIds, status, undefined, actor);
+    }
+
+    async listJobVersions(jobId: string, page: number, limit: number): Promise<PageResponse<JobRevisionSummary>> {
+        return this.jobs.listVersions(jobId, page, limit);
+    }
+
+    async getJobVersion(jobId: string, version: number): Promise<JobRevision> {
+        return this.jobs.getVersion(jobId, version);
+    }
+
+    async rollbackJob(jobId: string, targetVersion: number, expectedVersion: number, actor?: AuthenticatedActor): Promise<JobView> {
+        return this.jobs.rollback(jobId, targetVersion, expectedVersion, actor);
     }
 
     async previewSchedule(input: unknown): Promise<{

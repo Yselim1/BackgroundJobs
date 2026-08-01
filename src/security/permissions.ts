@@ -13,7 +13,8 @@ export type Permission =
     | 'audit:read'
     | 'attention:read'
     | 'attention:manage'
-    | 'system:read';
+    | 'system:read'
+    | 'workers:manage';
 
 const ROLE_PERMISSIONS: Record<SecurityRole, ReadonlySet<Permission>> = {
     viewer: new Set(['jobs:read', 'executions:read', 'platform:read', 'tokens:manage_self', 'attention:read']),
@@ -24,7 +25,7 @@ const ROLE_PERMISSIONS: Record<SecurityRole, ReadonlySet<Permission>> = {
     admin: new Set([
         'jobs:read', 'jobs:run', 'jobs:write', 'executions:read', 'executions:cancel',
         'platform:read', 'tokens:manage_self', 'users:manage', 'secrets:manage', 'audit:read',
-        'attention:read', 'attention:manage', 'system:read'
+        'attention:read', 'attention:manage', 'system:read', 'workers:manage'
     ])
 };
 

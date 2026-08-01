@@ -28,7 +28,7 @@ npm run dev:server
 
 Bootstrap refuses to run after the first user exists. Subsequent local starts need only `npm run dev`.
 
-The default connection is `postgres://postgres:postgres@localhost:5432/backgroundjobs`; copy `.env.example` into your environment when different values are needed. Environment variables are not automatically loaded from a file.
+The default connection is `postgres://postgres:postgres@localhost:5432/backgroundjobs`; copy `.env.example` to `.env` when different values are needed. Development scripts load the ignored root `.env` automatically.
 
 Configuration:
 
@@ -37,6 +37,11 @@ Configuration:
 | `DATABASE_URL` | local Compose URL | PostgreSQL connection string |
 | `DB_POOL_MAX` | `10` | Maximum pooled database connections |
 | `WORKER_CONCURRENCY` | `4` | Maximum concurrently running jobs |
+| `WORKER_NAME` | hostname and process ID | Worker name shown in the dashboard |
+| `WORKER_QUEUES` | `default` | Comma-separated queues this worker consumes |
+| `WORKER_HEARTBEAT_MS` | `5000` | Worker heartbeat and cancellation-check interval |
+| `EXECUTION_LEASE_MS` | `20000` | Duration of a renewable execution ownership lease |
+| `WORKER_STALE_MS` | `30000` | Time after which a missing worker is shown offline |
 | `SCHEDULER_POLL_MS` | `1000` | Scheduler and dispatcher poll interval |
 | `SHUTDOWN_GRACE_MS` | `10000` | Grace before running work is interrupted |
 | `AUTH_SESSION_TTL_MS` | `43200000` | Absolute server-side session lifetime |
@@ -122,7 +127,14 @@ Supported step types are `RESTAPI`, `SCRIPT`, `COMMAND`, and `PYTHON`. Step depe
 | `PUT` | `/api/jobs/:id` | Replace a job |
 | `DELETE` | `/api/jobs/:id` | Delete a job while preserving history |
 | `GET` | `/api/jobs/:id/plan` | Inspect dependency levels |
+| `GET` | `/api/jobs/:id/versions` | Page immutable job revisions |
+| `GET` | `/api/jobs/:id/versions/:version` | Inspect one revision |
+| `POST` | `/api/jobs/:id/rollback` | Create a new revision from an older definition |
 | `POST` | `/api/jobs/:id/run` | Queue a manual execution (`202`) |
+| `GET` | `/api/workers` | Inspect registered workers and lease health |
+| `GET` | `/api/queues` | Inspect per-queue backlog and capacity |
+| `POST` | `/api/workers/:id/drain` | Stop a worker from claiming new work |
+| `POST` | `/api/workers/:id/resume` | Resume a drained worker |
 | `GET` | `/api/executions` | Filter and cursor-page execution summaries |
 | `GET` | `/api/executions/events` | Follow new durable execution/step events using SSE |
 | `GET` | `/api/executions/:id` | Get an execution with steps and attempts |
@@ -147,13 +159,27 @@ A manual run returns immediately:
 }
 ```
 
-The response has `Location: /api/executions/:executionId`. Replacing or deleting a job with queued/running work returns `409 JOB_IS_ACTIVE`. Cancelling a cancelled execution is idempotent; cancelling another terminal status returns `409 EXECUTION_NOT_CANCELLABLE`.
+The response has `Location: /api/executions/:executionId`. Replacing a job is safe while older snapshots are queued or running; deleting a job with queued/running work returns `409 JOB_IS_ACTIVE`. Cancelling a cancelled execution is idempotent; cancelling another terminal status returns `409 EXECUTION_NOT_CANCELLABLE`.
 
 ## Scheduling and recovery
 
 The scheduler locks due jobs transactionally. After downtime it records only the latest missed occurrence and advances directly to the next future time. If the job already has queued/running work, that occurrence is stored as terminal `skipped` with reason `overlap`. Scheduled occurrence and active-job uniqueness are database-enforced.
 
-Workers claim the oldest execution with `FOR UPDATE SKIP LOCKED`. On startup, orphaned `running` executions become `failed` with `SERVER_INTERRUPTED`; queued work remains eligible. Graceful shutdown stops scheduling/claiming, waits for the configured grace, and then aborts remaining executors. REST request signals are combined with request timeouts, and command/Python cancellation terminates spawned process trees.
+Workers claim compatible executions with `FOR UPDATE SKIP LOCKED`. Running executions carry renewable worker leases; expired ownership becomes `failed/WORKER_LOST`, while graceful shutdown failures use `SERVER_INTERRUPTED` and queued work remains eligible. Shutdown stops scheduling/claiming, waits for the configured grace, and then aborts remaining executors. REST request signals are combined with request timeouts, and command/Python cancellation terminates spawned process trees.
+
+## Job revisions and worker queues
+
+Every create, edit, status change, import, and rollback creates an immutable sequential job revision. `PUT /api/jobs/:id` requires the current version in `If-Match`; a stale editor receives `409 JOB_VERSION_CONFLICT`. Rollback creates another revision and preserves the job's current active/inactive state. Every new execution records both the exact definition snapshot and its revision number.
+
+Manual and event-triggered requests may backlog while a job is running; only one execution per job runs at once. Scheduled overlap still produces a skipped occurrence. `QUEUE` defaults to `default`, `PRIORITY` defaults to zero, and workers claim higher priority first while preserving FIFO order within a priority.
+
+`npm run dev` retains the all-in-one API, scheduler, dispatcher, and worker. Run `npm run dev:worker` in another terminal to add a PostgreSQL-coordinated worker. Worker heartbeats renew execution leases and observe remote cancellation; an expired lease fails once with `WORKER_LOST` rather than automatically repeating potentially non-idempotent side effects.
+
+## Inbound events and job chaining
+
+Administrators configure webhook and job-completion triggers from a job's Automations tab. Webhook creation or rotation returns a `bj_hook_...` bearer token exactly once; only its SHA-256 hash is stored. Invoke it with `POST /hooks/:triggerId`, a JSON-object body, and `Authorization: Bearer ...`. An optional `Idempotency-Key` returns the original queued execution for repeated delivery.
+
+Job-completion triggers select a source job and terminal states. Terminal transactions write a durable outbox event, and the automation dispatcher queues the target with source metadata, original input, and persisted step outputs. Cycles are rejected. Automatic triggers pause while the target job is inactive; manual runs remain allowed.
 
 ## Tests and build
 
@@ -225,7 +251,7 @@ Roles are intentionally narrow:
 
 | Role | Access |
 | --- | --- |
-| `viewer` | Read jobs, execution history, events, platform status, and operational attention |
+| `viewer` | Read jobs, revisions, automations, execution history, workers, platform status, and operational attention |
 | `operator` | Viewer access plus queueing jobs and cancelling executions |
 | `admin` | Operator access plus job definitions, attention remediation, users, roles, managed secrets, and audit history |
 
@@ -387,7 +413,7 @@ npm run dev
 
 For production, run `npm run build` inside `dashboard/` and serve its `dist/` output behind the same origin/reverse proxy as the API. `VITE_API_BASE_URL` can point at an origin explicitly listed in `CORS_ALLOWED_ORIGINS`.
 
-The dashboard provides login/logout, permission-aware run/cancel controls, a dedicated `/admin` workspace for users and managed secrets, immutable audit review, and a shared `/attention` triage queue. Attention filters, state tabs, exact pagination, and page sizes persist in the URL; the same detail drawer opens from the overview preview and the full page. Its Jobs workspace supports URL-persisted filters and sorting, bulk status changes, definition duplication/export, schedule previews, high-frequency activation warnings, managed-secret name suggestions, and dependency previews. Deep-linkable job detail and Logs pages expose workflow plans, actor/input data, attempts, outputs, cancellation state, and webhook deliveries. Tables refresh from the authenticated global SSE feed, while polling captures webhook-only attention changes and the overview retains raw 24-hour execution and webhook metrics.
+The dashboard provides login/logout, permission-aware run/cancel controls, a dedicated `/admin` workspace, immutable audit review, a shared `/attention` triage queue, and `/workers` fleet visibility. Job details include URL-addressable Overview, Versions, and Automations tabs with revision diffs, safe rollback, one-time webhook credentials, chain configuration, and durable trigger history. Its Jobs workspace retains filters, sorting, bulk status changes, definition duplication/export, schedule previews, queue/priority controls, secret suggestions, and dependency previews.
 
 ## Adding Kafka or RabbitMQ later
 

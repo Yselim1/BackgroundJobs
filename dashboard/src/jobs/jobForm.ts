@@ -2,8 +2,8 @@ import type { Job, JobDefinition, JobStep } from '../types';
 
 const JOB_FIELDS = new Set([
     'id', 'name', 'description', 'status', 'schedule', 'timezone', 'TIMEOUT_MS',
-    'MAX_CONCURRENCY', 'FAILURE_POLICY', 'DEFAULT_STEP_RETRY', 'STEPS',
-    'last_run', 'next_run', 'created_at', 'updated_at'
+    'MAX_CONCURRENCY', 'FAILURE_POLICY', 'DEFAULT_STEP_RETRY', 'QUEUE', 'PRIORITY', 'STEPS',
+    'version', 'last_run', 'next_run', 'created_at', 'updated_at'
 ]);
 const STEP_FIELDS = new Set([
     'ORDER', 'ID', 'NAME', 'TYPE', 'DEPENDS_ON', 'STEP_PARAMS'
@@ -26,6 +26,8 @@ export interface JobForm {
     status: 'active' | 'inactive';
     schedule: string;
     timezone: string;
+    queue: string;
+    priority: string;
     timeoutMs: string;
     maxConcurrency: string;
     failurePolicy: 'fail_fast' | 'continue_independent';
@@ -66,6 +68,8 @@ export function createJobForm(job?: Job): JobForm {
             status: 'inactive',
             schedule: '',
             timezone: 'UTC',
+            queue: 'default',
+            priority: '0',
             timeoutMs: '',
             maxConcurrency: '1',
             failurePolicy: 'fail_fast',
@@ -87,6 +91,8 @@ export function createJobForm(job?: Job): JobForm {
         status: job.status,
         schedule: job.schedule ?? '',
         timezone: job.timezone,
+        queue: job.QUEUE ?? 'default',
+        priority: job.PRIORITY?.toString() ?? '0',
         timeoutMs: job.TIMEOUT_MS?.toString() ?? '',
         maxConcurrency: job.MAX_CONCURRENCY?.toString() ?? '',
         failurePolicy: job.FAILURE_POLICY ?? 'fail_fast',
@@ -114,6 +120,7 @@ export function buildJobDefinition(form: JobForm): JobDefinition {
     const advanced = parseObject(form.advanced, 'advanced');
     const timeoutMs = optionalPositiveInteger(form.timeoutMs, 'TIMEOUT_MS');
     const maxConcurrency = optionalPositiveInteger(form.maxConcurrency, 'MAX_CONCURRENCY');
+    const priority = boundedInteger(form.priority, 'PRIORITY', -100, 100);
     const retryMaxAttempts = optionalPositiveInteger(form.retryMaxAttempts, 'DEFAULT_STEP_RETRY.MAX_ATTEMPTS');
     const retryDelayMs = optionalNonNegativeInteger(form.retryDelayMs, 'DEFAULT_STEP_RETRY.DELAY_MS');
     const hasRetry = retryMaxAttempts !== undefined || retryDelayMs !== undefined;
@@ -126,6 +133,8 @@ export function buildJobDefinition(form: JobForm): JobDefinition {
         status: form.status,
         ...(form.schedule.trim().length === 0 ? {} : { schedule: form.schedule }),
         timezone: form.timezone,
+        ...(form.queue.trim().toLowerCase() === 'default' ? {} : { QUEUE: form.queue.trim().toLowerCase() }),
+        ...(priority === 0 ? {} : { PRIORITY: priority }),
         ...(timeoutMs === undefined ? {} : { TIMEOUT_MS: timeoutMs }),
         ...(maxConcurrency === undefined ? {} : { MAX_CONCURRENCY: maxConcurrency }),
         FAILURE_POLICY: form.failurePolicy,
@@ -146,9 +155,18 @@ export function stripJobReadOnly(job: Job): JobDefinition {
         next_run: _nextRun,
         created_at: _createdAt,
         updated_at: _updatedAt,
+        version: _version,
         ...definition
     } = job;
     return definition;
+}
+
+function boundedInteger(value: string, field: string, min: number, max: number): number {
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+        throw new JobFormError(field, `${field} must be an integer between ${min} and ${max}.`);
+    }
+    return parsed;
 }
 
 export function paramsForType(type: string): string {

@@ -9,7 +9,10 @@ import { createPlatformController } from './controllers/platformController.js';
 import { createAuthController } from './controllers/authController.js';
 import { createAttentionController } from './controllers/attentionController.js';
 import { createSecurityController } from './controllers/securityController.js';
+import { createAutomationController, createWebhookIngressController } from './controllers/automationController.js';
+import { createQueuesController, createWorkersController } from './controllers/workersController.js';
 import { AttentionRepository } from './repositories/AttentionRepository.js';
+import type { AutomationRepository } from './repositories/AutomationRepository.js';
 import { ExecutionRepository } from './repositories/ExecutionRepository.js';
 import {
     auditMutations,
@@ -24,6 +27,7 @@ import type { SecurityRuntime } from './security/runtime.js';
 import { JobExecutionManager } from './services/JobExecutionManager.js';
 import { JobService } from './services/JobService.js';
 import type { WebhookDispatcher } from './services/WebhookDispatcher.js';
+import type { AutomationDispatcher } from './services/AutomationDispatcher.js';
 import { JobValidationError } from './utils/jobValidator.js';
 
 export interface AppDependencies {
@@ -32,6 +36,8 @@ export interface AppDependencies {
     executions: ExecutionRepository;
     manager: JobExecutionManager;
     webhookDispatcher?: WebhookDispatcher;
+    automations?: AutomationRepository;
+    automationDispatcher?: AutomationDispatcher;
     security: SecurityRuntime;
 }
 
@@ -46,7 +52,8 @@ export function createApp(dependencies: AppDependencies): express.Express {
         try {
             await dependencies.pool.query('SELECT 1');
             await assertSchemaCurrent(dependencies.pool);
-            if (!dependencies.manager.started || !dependencies.webhookDispatcher?.started) {
+            if (!dependencies.manager.started || (dependencies.webhookDispatcher !== undefined && !dependencies.webhookDispatcher.started)
+                || (dependencies.automationDispatcher !== undefined && !dependencies.automationDispatcher.started)) {
                 throw new Error('Scheduler, execution dispatcher, and webhook dispatcher have not started.');
             }
             res.status(200).json({ status: 'ready' });
@@ -54,13 +61,17 @@ export function createApp(dependencies: AppDependencies): express.Express {
             res.status(503).json({ status: 'not_ready', error: error instanceof Error ? error.message : String(error) });
         }
     });
+    if (dependencies.automations !== undefined) app.use('/hooks', createWebhookIngressController(dependencies.automations));
     app.use('/api', auditMutations(dependencies.security.audit));
     app.use('/api', identifyRequest(dependencies.security.auth));
     app.use('/api', protectCsrf);
     app.use('/api/auth', createAuthController(dependencies.security.auth, dependencies.security.config));
     app.use('/api', requireAuthentication);
     app.use('/api', requirePasswordChangeComplete);
+    if (dependencies.automations !== undefined) app.use('/api/jobs', createAutomationController(dependencies.automations));
     app.use('/api/jobs', createJobsController(dependencies.jobs));
+    app.use('/api/workers', createWorkersController(dependencies.manager.workers));
+    app.use('/api/queues', createQueuesController(dependencies.manager.workers));
     app.use('/api/executions', createExecutionsController(dependencies.executions, dependencies.manager));
     app.use('/api/logs', requirePermission('executions:read'), createLogsController(dependencies.executions));
     app.use('/api/attention', createAttentionController(
@@ -70,7 +81,8 @@ export function createApp(dependencies: AppDependencies): express.Express {
     ));
     app.use('/api/platform', requirePermission('platform:read'), createPlatformController(
         dependencies.pool,
-        dependencies.manager.capacity
+        dependencies.manager.capacity,
+        dependencies.manager.workers.staleAfterMs
     ));
     app.use('/api/security', createSecurityController(
         dependencies.security.auth,

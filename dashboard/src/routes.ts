@@ -5,6 +5,7 @@ export type DashboardRoute =
     | { page: 'logs'; executionId?: string }
     | { page: 'audit' }
     | { page: 'attention' }
+    | { page: 'workers' }
     | { page: 'admin' };
 
 export function parseDashboardRoute(pathname: string): DashboardRoute {
@@ -18,6 +19,7 @@ export function parseDashboardRoute(pathname: string): DashboardRoute {
     }
     if (segments[0] === 'audit') return { page: 'audit' };
     if (segments[0] === 'attention') return { page: 'attention' };
+    if (segments[0] === 'workers') return { page: 'workers' };
     if (segments[0] === 'admin') return { page: 'admin' };
     return { page: 'overview' };
 }
