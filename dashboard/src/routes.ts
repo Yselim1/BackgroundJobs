@@ -2,7 +2,10 @@ export type DashboardRoute =
     | { page: 'overview' }
     | { page: 'jobs' }
     | { page: 'job-detail'; jobId: string }
-    | { page: 'logs'; executionId?: string };
+    | { page: 'logs'; executionId?: string }
+    | { page: 'audit' }
+    | { page: 'attention' }
+    | { page: 'admin' };
 
 export function parseDashboardRoute(pathname: string): DashboardRoute {
     const segments = (pathname || '/').split('/').filter(Boolean).map(safeDecode);
@@ -13,6 +16,9 @@ export function parseDashboardRoute(pathname: string): DashboardRoute {
     if (segments[0] === 'logs') {
         return { page: 'logs', ...(segments[1] === undefined ? {} : { executionId: segments[1] }) };
     }
+    if (segments[0] === 'audit') return { page: 'audit' };
+    if (segments[0] === 'attention') return { page: 'attention' };
+    if (segments[0] === 'admin') return { page: 'admin' };
     return { page: 'overview' };
 }
 

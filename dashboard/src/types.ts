@@ -22,6 +22,37 @@ export interface SecurityUser {
     createdAt: string;
 }
 
+export type AttentionKind = 'execution_failure' | 'webhook_failure';
+export type AttentionState = 'open' | 'ignored' | 'resolved';
+
+export interface AttentionItem {
+    attentionId: string;
+    kind: AttentionKind;
+    sourceId: string;
+    executionId: string;
+    jobId: string;
+    reason: string;
+    detailSnapshot: Record<string, unknown>;
+    occurredAt: string;
+    state: AttentionState;
+    stateChangedBy: { type: 'system' | 'user' | 'api_token'; userId: string | null; label: string } | null;
+    stateChangedAt: string | null;
+    resolutionAction: 'rerun' | 'webhook_retry' | null;
+    resolutionDetails: Record<string, unknown> | null;
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface AttentionFilters {
+    state: AttentionState;
+    kind?: AttentionKind;
+    search?: string;
+    from?: string;
+    to?: string;
+    page: number;
+    limit: 25 | 50 | 100;
+}
+
 export interface ManagedSecret {
     secretId: string;
     name: string;
@@ -32,13 +63,39 @@ export interface ManagedSecret {
 
 export interface AuditEvent {
     auditId: string;
+    requestId: string;
+    actorType: 'anonymous' | 'user' | 'api_token' | 'system';
+    actorUserId: string | null;
     actorLabel: string;
     action: string;
     outcome: 'success' | 'failure';
     statusCode: number;
     resourceType: string | null;
     resourceId: string | null;
+    ipAddress: string | null;
+    userAgent: string | null;
+    metadata: Record<string, unknown>;
     createdAt: string;
+}
+
+export interface PageResponse<T> {
+    items: T[];
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+}
+
+export interface AuditFilters {
+    action?: string;
+    actorType?: AuditEvent['actorType'];
+    actorLabel?: string;
+    resource?: string;
+    outcome?: AuditEvent['outcome'];
+    from?: string;
+    to?: string;
+    page?: number;
+    limit?: number;
 }
 
 export interface PlatformOverview {
@@ -58,6 +115,12 @@ export interface PlatformOverview {
     };
     webhooks: { pending: number; delivering: number; failed: number };
     workers: { capacity: number; busy: number; available: number; utilizationPercent: number };
+    attention: {
+        openExecutionFailures: number;
+        openWebhookFailures: number;
+        failedExecutions: AttentionItem[];
+        failedWebhooks: AttentionItem[];
+    };
 }
 
 export interface RetryPolicy {
@@ -168,6 +231,7 @@ export interface ExecutionFilters {
     to?: string;
     limit?: number;
     cursor?: string;
+    page?: number;
     order?: 'asc' | 'desc';
 }
 

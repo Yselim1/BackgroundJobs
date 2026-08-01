@@ -1,11 +1,12 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import request from 'supertest';
 import type { Express } from 'express';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../../src/app.js';
-import { getSchemaVersions, migrate } from '../../src/db/migrations.js';
+import { getSchemaVersions, migrate, readMigrations } from '../../src/db/migrations.js';
 import { createPool, type DatabasePool } from '../../src/db/pool.js';
 import { loadConfig } from '../../src/config.js';
 import { ExecutionRepository } from '../../src/repositories/ExecutionRepository.js';
@@ -67,6 +68,88 @@ describe('PostgreSQL repositories and lifecycle', () => {
         const versions = await getSchemaVersions(pool);
         expect(versions.current).toBe(versions.latest);
         expect(versions.latest).toBeGreaterThan(0);
+    });
+
+    it('backfills attention schema with constraints, indexes, and retention cascading', async () => {
+        const schema = 'attention_migration_' + randomUUID().replaceAll('-', '');
+        const client = await pool.connect();
+        try {
+            await client.query(`CREATE SCHEMA "${schema}"`);
+            await client.query(`SET search_path TO "${schema}"`);
+            const migrations = await readMigrations();
+            for (const migration of migrations.filter(item => item.version < 5)) {
+                await client.query(migration.sql);
+            }
+            const definition = job('migration-attention', 'inactive');
+            await client.query(
+                `INSERT INTO jobs(id, definition, status, timezone)
+                 VALUES ($1, $2::jsonb, 'inactive', 'UTC')`,
+                [definition.id, JSON.stringify(definition)]
+            );
+            const recentExecution = randomUUID();
+            const oldExecution = randomUUID();
+            await client.query(
+                `INSERT INTO executions(
+                    id, job_id, job_definition, input, trigger_type, status,
+                    requested_at, finished_at, error_code, error_message
+                 ) VALUES
+                    ($1, $3, $4::jsonb, '{"source":"recent"}'::jsonb, 'manual', 'failed',
+                     clock_timestamp() - interval '2 hours', clock_timestamp() - interval '1 hour', 'RECENT', 'Recent failure'),
+                    ($2, $3, $4::jsonb, '{}'::jsonb, 'manual', 'failed',
+                     clock_timestamp() - interval '26 hours', clock_timestamp() - interval '25 hours', 'OLD', 'Old failure')`,
+                [recentExecution, oldExecution, definition.id, JSON.stringify(definition)]
+            );
+            const deliveryId = randomUUID();
+            await client.query(
+                `INSERT INTO webhook_deliveries(
+                    id, execution_id, event_type, subscription_index, url, payload,
+                    status, attempt_count, last_error
+                 ) VALUES ($1, $2, 'execution.failed', 0, 'https://example.test/hook', '{}',
+                           'failed', 4, 'Webhook failed')`,
+                [deliveryId, recentExecution]
+            );
+            await client.query(migrations.find(item => item.version === 5)!.sql);
+
+            const items = await client.query<{
+                kind: string;
+                source_id: string;
+                detail_snapshot: Record<string, unknown>;
+            }>('SELECT kind, source_id, detail_snapshot FROM operational_attention_items ORDER BY kind');
+            expect(items.rows).toHaveLength(2);
+            expect(items.rows.some(item => item.source_id === oldExecution)).toBe(false);
+            expect(items.rows.find(item => item.kind === 'webhook_failure')?.detail_snapshot).toMatchObject({
+                attemptCount: 4,
+                lastError: 'Webhook failed'
+            });
+
+            const indexes = await client.query<{ indexname: string }>(
+                `SELECT indexname FROM pg_indexes
+                 WHERE schemaname = $1 AND tablename = 'operational_attention_items'`,
+                [schema]
+            );
+            expect(indexes.rows.map(item => item.indexname)).toEqual(expect.arrayContaining([
+                'operational_attention_source_uidx',
+                'operational_attention_state_idx',
+                'operational_attention_kind_idx',
+                'operational_attention_newest_idx',
+                'operational_attention_state_newest_idx'
+            ]));
+            await expect(client.query(
+                `INSERT INTO operational_attention_items(
+                    id, kind, source_id, execution_id, job_id, reason, detail_snapshot, occurred_at
+                 ) SELECT $1, kind, source_id, execution_id, job_id, reason, detail_snapshot, occurred_at
+                   FROM operational_attention_items LIMIT 1`,
+                [randomUUID()]
+            )).rejects.toMatchObject({ code: '23505' });
+            await client.query('DELETE FROM executions WHERE id = $1', [recentExecution]);
+            expect((await client.query<{ count: string }>(
+                'SELECT count(*)::text AS count FROM operational_attention_items'
+            )).rows[0]?.count).toBe('0');
+        } finally {
+            await client.query('SET search_path TO public').catch(() => undefined);
+            await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => undefined);
+            client.release();
+        }
     });
 
     it('persists jobs transactionally and retains execution history after deletion', async () => {
@@ -177,7 +260,24 @@ describe('PostgreSQL repositories and lifecycle', () => {
         expect(resumedClaim?.deliveryId).toBe(firstClaim?.deliveryId);
         expect(resumedClaim?.attemptCount).toBe(2);
         await webhooks.fail(resumedClaim!.deliveryId, 2, 'still unavailable', null);
-        expect((await executions.listWebhookDeliveries(queued.executionId))[0]?.status).toBe('failed');
+        await pool.query(
+            `INSERT INTO webhook_deliveries(
+                id, execution_id, event_type, subscription_index, url, payload, status
+             ) VALUES ($1, $2, 'execution.success', 1, 'https://example.test/interrupted', '{}', 'pending')`,
+            [randomUUID(), queued.executionId]
+        );
+        const finalInterrupted = await webhooks.claimDue();
+        expect(finalInterrupted?.attemptCount).toBe(1);
+        expect(await webhooks.reconcileDelivering(1)).toBe(1);
+        const deliveries = await executions.listWebhookDeliveries(queued.executionId);
+        expect(deliveries.every(item => item.status === 'failed')).toBe(true);
+        const attention = await pool.query<{ source_id: string; state: string }>(
+            `SELECT source_id, state FROM operational_attention_items
+             WHERE kind = 'webhook_failure' AND execution_id = $1`,
+            [queued.executionId]
+        );
+        expect(attention.rows).toHaveLength(2);
+        expect(attention.rows.every(item => item.state === 'open')).toBe(true);
     });
 });
 
@@ -263,6 +363,51 @@ describe('HTTP execution API', () => {
         expect(list.body.items).toHaveLength(1);
         await authenticatedRequest(app).get('/api/logs').expect(200).expect(response => expect(Array.isArray(response.body)).toBe(true));
         await authenticatedRequest(app).get('/health/ready').expect(503);
+    });
+
+    it('supports exact page-mode execution history without changing cursor clients', async () => {
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000);
+        const app = createApp({
+            pool,
+            jobs: new JobService(jobs, executions),
+            executions,
+            manager,
+            security
+        });
+        const ids: string[] = [];
+        for (let index = 0; index < 3; index++) {
+            const jobId = 'paged-execution-' + index;
+            await jobs.create(job(jobId, 'inactive'));
+            ids.push((await executions.enqueueManual(jobId)).executionId);
+            await new Promise(resolve => setTimeout(resolve, 5));
+        }
+
+        await authenticatedRequest(app).get('/api/executions?page=1&limit=2&order=asc').expect(200)
+            .expect(response => {
+                expect(response.body.items.map((item: { executionId: string }) => item.executionId)).toEqual(ids.slice(0, 2));
+                expect(response.body).toMatchObject({ page: 1, pageSize: 2, total: 3, totalPages: 2 });
+                expect(response.body).not.toHaveProperty('nextCursor');
+            });
+        await authenticatedRequest(app).get('/api/executions?page=2&limit=2&order=asc').expect(200)
+            .expect(response => expect(response.body.items[0].executionId).toBe(ids[2]));
+        await authenticatedRequest(app).get('/api/executions?page=99&limit=2').expect(200)
+            .expect(response => {
+                expect(response.body.items).toEqual([]);
+                expect(response.body).toMatchObject({ page: 99, total: 3, totalPages: 2 });
+            });
+
+        const cursorPage = await authenticatedRequest(app).get('/api/executions?limit=2&order=asc').expect(200);
+        expect(cursorPage.body.nextCursor).toBeTypeOf('string');
+        await authenticatedRequest(app)
+            .get('/api/executions?page=1&cursor=' + encodeURIComponent(cursorPage.body.nextCursor as string))
+            .expect(400)
+            .expect(response => expect(response.body.code).toBe('CONFLICTING_PAGINATION'));
+        await authenticatedRequest(app).get('/api/executions?page=0').expect(400)
+            .expect(response => expect(response.body.code).toBe('INVALID_PAGE'));
+        await authenticatedRequest(app).get('/api/executions?from=2026-01-01').expect(400)
+            .expect(response => expect(response.body.code).toBe('INVALID_FROM'));
+        await authenticatedRequest(app).get('/api/executions?from=2026-02-30T00%3A00%3A00Z').expect(400)
+            .expect(response => expect(response.body.code).toBe('INVALID_FROM'));
     });
 
     it('rejects read-only schedule fields and terminal-state cancellation', async () => {
@@ -483,6 +628,297 @@ describe('HTTP execution API', () => {
         }
     });
 
+    it('returns ordered attention previews for failed executions and webhook deliveries', async () => {
+        const definition = {
+            ...job('attention-failure', 'inactive'),
+            WEBHOOKS: [{
+                URL: 'https://example.test/failure',
+                EVENTS: ['failed' as const]
+            }]
+        };
+        await jobs.create(definition);
+        const failed = await executions.enqueueManual(definition.id);
+        await executions.claimOldestQueued();
+        await executions.finishExecution(failed.executionId, 'failed', 'TEST_FAILURE', 'Execution exploded.');
+        const webhookRepository = new WebhookRepository(pool);
+        const delivery = await webhookRepository.claimDue();
+        expect(delivery?.executionId).toBe(failed.executionId);
+        await webhookRepository.fail(delivery!.deliveryId, 1, 'Remote endpoint unavailable.', 503);
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000);
+        const app = createApp({
+            pool,
+            jobs: new JobService(jobs, executions),
+            executions,
+            manager,
+            security
+        });
+        await authenticatedRequest(app).get('/api/platform/overview').expect(200)
+            .expect(response => {
+                expect(response.body.executions.failed24h).toBe(1);
+                expect(response.body.webhooks.failed).toBe(1);
+                expect(response.body.attention.openExecutionFailures).toBe(1);
+                expect(response.body.attention.openWebhookFailures).toBe(1);
+                expect(response.body.attention.failedExecutions[0]).toMatchObject({
+                    kind: 'execution_failure',
+                    sourceId: failed.executionId,
+                    executionId: failed.executionId,
+                    jobId: definition.id,
+                    reason: 'Execution exploded.'
+                });
+                expect(response.body.attention.failedExecutions[0].detailSnapshot.errorCode).toBe('TEST_FAILURE');
+                expect(response.body.attention.failedWebhooks[0]).toMatchObject({
+                    kind: 'webhook_failure',
+                    sourceId: delivery!.deliveryId,
+                    executionId: failed.executionId,
+                    jobId: definition.id,
+                    reason: 'Remote endpoint unavailable.'
+                });
+                expect(response.body.attention.failedWebhooks[0].detailSnapshot).toMatchObject({
+                    attemptCount: 1,
+                    responseStatus: 503
+                });
+            });
+    });
+
+    it('lists, filters, ignores, restores, and reruns durable attention items', async () => {
+        const definition = job('attention-api', 'inactive');
+        await jobs.create(definition);
+        const failed = await executions.enqueueManual(definition.id, { accountId: 42 });
+        await executions.claimOldestQueued();
+        await executions.finishExecution(failed.executionId, 'failed', 'API_FAILURE', 'Customer sync exploded.');
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000);
+        const app = createApp({
+            pool,
+            jobs: new JobService(jobs, executions),
+            executions,
+            manager,
+            security
+        });
+
+        const page = await authenticatedRequest(app).get('/api/attention?state=open&page=1&limit=25').expect(200);
+        expect(page.body).toMatchObject({ page: 1, pageSize: 25, total: 1, totalPages: 1 });
+        const item = page.body.items[0] as {
+            attentionId: string;
+            occurredAt: string;
+            state: string;
+            sourceId: string;
+        };
+        expect(item).toMatchObject({ state: 'open', sourceId: failed.executionId });
+        const calendarDay = item.occurredAt.slice(0, 10);
+        await authenticatedRequest(app)
+            .get('/api/attention?state=open&kind=execution_failure&search=sync&from=' + calendarDay + '&to=' + calendarDay + '&page=1&limit=25')
+            .expect(200)
+            .expect(response => expect(response.body.total).toBe(1));
+        await authenticatedRequest(app).get('/api/attention?state=ignored&page=1&limit=25').expect(200)
+            .expect(response => expect(response.body.total).toBe(0));
+        await authenticatedRequest(app).get('/api/attention/' + item.attentionId).expect(200)
+            .expect(response => expect(response.body.detailSnapshot.input).toEqual({ accountId: 42 }));
+
+        const ignored = await authenticatedRequest(app).post('/api/attention/' + item.attentionId + '/ignore').expect(200);
+        expect(ignored.body.state).toBe('ignored');
+        const ignoredAgain = await authenticatedRequest(app).post('/api/attention/' + item.attentionId + '/ignore').expect(200);
+        expect(ignoredAgain.body.stateChangedAt).toBe(ignored.body.stateChangedAt);
+        await authenticatedRequest(app).get('/api/platform/overview').expect(200).expect(response => {
+            expect(response.body.attention.openExecutionFailures).toBe(0);
+            expect(response.body.attention.failedExecutions).toEqual([]);
+            expect(response.body.executions.failed24h).toBe(1);
+        });
+
+        const restored = await authenticatedRequest(app).post('/api/attention/' + item.attentionId + '/restore').expect(200);
+        expect(restored.body.state).toBe('open');
+        const restoredAgain = await authenticatedRequest(app).post('/api/attention/' + item.attentionId + '/restore').expect(200);
+        expect(restoredAgain.body.stateChangedAt).toBe(restored.body.stateChangedAt);
+
+        await jobs.replace(definition.id, { ...definition, name: 'Current job definition' });
+        const resolved = await authenticatedRequest(app).post('/api/attention/' + item.attentionId + '/rerun').expect(200);
+        expect(resolved.body).toMatchObject({ state: 'resolved', resolutionAction: 'rerun' });
+        const newExecutionId = resolved.body.resolutionDetails.newExecutionId as string;
+        const rerun = await executions.getDetail(newExecutionId);
+        expect(rerun?.input).toEqual({ accountId: 42 });
+        expect(rerun?.jobDefinition.name).toBe('Current job definition');
+        await authenticatedRequest(app).post('/api/attention/' + item.attentionId + '/rerun').expect(409)
+            .expect(response => expect(response.body.code).toBe('ATTENTION_STATE_CONFLICT'));
+        await authenticatedRequest(app).post('/api/attention/' + item.attentionId + '/ignore').expect(409);
+
+        await waitFor(async () => {
+            const audit = await security.audit.list({ limit: 50, action: 'attention.' });
+            const actions = new Set(audit.items.map(event => event.action));
+            return actions.has('attention.ignore')
+                && actions.has('attention.restore')
+                && actions.has('attention.rerun');
+        });
+
+        const pagedSources = Array.from({ length: 26 }, () => randomUUID());
+        const pagedAttentionIds = Array.from({ length: 26 }, () => randomUUID());
+        await pool.query(
+            `INSERT INTO executions(
+                id, job_id, job_definition, input, trigger_type, status,
+                requested_at, finished_at, error_message
+             )
+             SELECT source_id, 'paged-attention-' || (ordinality - 1), $2::jsonb, '{}'::jsonb,
+                    'manual', 'failed', clock_timestamp() - (ordinality * interval '1 second'),
+                    clock_timestamp() - (ordinality * interval '1 second'), 'Paged attention failure'
+             FROM unnest($1::uuid[]) WITH ORDINALITY AS sources(source_id, ordinality)`,
+            [pagedSources, JSON.stringify(definition)]
+        );
+        await pool.query(
+            `INSERT INTO operational_attention_items(
+                id, kind, source_id, execution_id, job_id, reason, detail_snapshot, occurred_at
+             )
+             SELECT attention_id, 'execution_failure', source_id, source_id,
+                    'paged-attention-' || (sources.ordinality - 1),
+                    'Paged attention failure', '{}'::jsonb,
+                    clock_timestamp() - (sources.ordinality * interval '1 second')
+             FROM unnest($1::uuid[]) WITH ORDINALITY AS sources(source_id, ordinality)
+             JOIN unnest($2::uuid[]) WITH ORDINALITY AS items(attention_id, ordinality)
+               ON items.ordinality = sources.ordinality`,
+            [pagedSources, pagedAttentionIds]
+        );
+        await authenticatedRequest(app).get('/api/attention?state=open&page=1&limit=25').expect(200)
+            .expect(response => expect(response.body).toMatchObject({ total: 26, totalPages: 2, pageSize: 25 }));
+        await authenticatedRequest(app).get('/api/attention?state=open&page=2&limit=25').expect(200)
+            .expect(response => expect(response.body.items).toHaveLength(1));
+        await authenticatedRequest(app).get('/api/attention?state=open&search=paged-attention-25&page=1&limit=50').expect(200)
+            .expect(response => expect(response.body.total).toBe(1));
+
+        await authenticatedRequest(app).get('/api/attention?state=invalid').expect(400);
+        await authenticatedRequest(app).get('/api/attention?kind=invalid').expect(400);
+        await authenticatedRequest(app).get('/api/attention?limit=10').expect(400);
+        await authenticatedRequest(app).get('/api/attention?from=2026-02-30').expect(400);
+        await authenticatedRequest(app).get('/api/attention?from=2026-08-02&to=2026-08-01').expect(400);
+        await authenticatedRequest(app).get('/api/attention/not-a-uuid').expect(400);
+        await authenticatedRequest(app).get('/api/attention/00000000-0000-4000-8000-000000000000').expect(404);
+    });
+
+    it('keeps rerun attention open when the current job is missing or already active', async () => {
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000);
+        const app = createApp({ pool, jobs: new JobService(jobs, executions), executions, manager, security });
+
+        await jobs.create(job('attention-missing-job', 'inactive'));
+        const missingFailure = await executions.enqueueManual('attention-missing-job');
+        await executions.claimOldestQueued();
+        await executions.finishExecution(missingFailure.executionId, 'failed', 'FAILED', 'Missing job failure');
+        const missingItem = (await authenticatedRequest(app).get('/api/attention?search=attention-missing-job').expect(200)).body.items[0];
+        await jobs.delete('attention-missing-job');
+        await authenticatedRequest(app).post('/api/attention/' + missingItem.attentionId + '/rerun').expect(409)
+            .expect(response => expect(response.body.code).toBe('ATTENTION_JOB_MISSING'));
+        await authenticatedRequest(app).get('/api/attention/' + missingItem.attentionId).expect(200)
+            .expect(response => expect(response.body.state).toBe('open'));
+
+        await jobs.create(job('attention-active-job', 'inactive'));
+        const activeFailure = await executions.enqueueManual('attention-active-job');
+        await executions.claimOldestQueued();
+        await executions.finishExecution(activeFailure.executionId, 'failed', 'FAILED', 'Active job failure');
+        const activeItem = (await authenticatedRequest(app).get('/api/attention?search=attention-active-job').expect(200)).body.items[0];
+        await executions.enqueueManual('attention-active-job');
+        await authenticatedRequest(app).post('/api/attention/' + activeItem.attentionId + '/rerun').expect(409)
+            .expect(response => expect(response.body.code).toBe('ATTENTION_JOB_ACTIVE'));
+        await authenticatedRequest(app).get('/api/attention/' + activeItem.attentionId).expect(200)
+            .expect(response => expect(response.body.state).toBe('open'));
+    });
+
+    it('retries exact webhook deliveries, preserves attempts, and reopens repeated failures', async () => {
+        const createFailedDelivery = async (jobId: string) => {
+            const definition = {
+                ...job(jobId, 'inactive'),
+                WEBHOOKS: [{ URL: 'https://example.test/manual-retry', EVENTS: ['failed' as const] }]
+            };
+            await jobs.create(definition);
+            const execution = await executions.enqueueManual(jobId);
+            await executions.claimOldestQueued();
+            await executions.finishExecution(execution.executionId, 'failed', 'SOURCE_FAILURE', 'Execution failed.');
+            const repository = new WebhookRepository(pool);
+            const claimed = await repository.claimDue();
+            expect(claimed?.executionId).toBe(execution.executionId);
+            await repository.fail(claimed!.deliveryId, 1, 'Initial terminal failure.', 502);
+            return { execution, deliveryId: claimed!.deliveryId, repository };
+        };
+
+        const successful = await createFailedDelivery('attention-webhook-success');
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000);
+        const successDispatcher = new WebhookDispatcher(successful.repository, {
+            concurrency: 1,
+            pollMs: 1000,
+            maxAttempts: 1,
+            fetchImplementation: async () => new Response(null, { status: 204 })
+        });
+        await successDispatcher.start();
+        try {
+            const app = createApp({
+                pool,
+                jobs: new JobService(jobs, executions),
+                executions,
+                manager,
+                webhookDispatcher: successDispatcher,
+                security
+            });
+            const item = (await authenticatedRequest(app)
+                .get('/api/attention?kind=webhook_failure&search=' + successful.deliveryId)
+                .expect(200)).body.items[0];
+            const resolved = await authenticatedRequest(app)
+                .post('/api/attention/' + item.attentionId + '/retry-webhook')
+                .expect(200);
+            expect(resolved.body).toMatchObject({
+                attentionId: item.attentionId,
+                state: 'resolved',
+                resolutionAction: 'webhook_retry'
+            });
+            expect(resolved.body.resolutionDetails.attemptCountBeforeRetry).toBe(1);
+            await waitFor(async () => (
+                await executions.listWebhookDeliveries(successful.execution.executionId)
+            )[0]?.status === 'success');
+            expect((await executions.listWebhookDeliveries(successful.execution.executionId))[0]?.attemptCount).toBe(2);
+            await authenticatedRequest(app).get('/api/attention/' + item.attentionId).expect(200)
+                .expect(response => expect(response.body.state).toBe('resolved'));
+            await authenticatedRequest(app).post('/api/attention/' + item.attentionId + '/retry-webhook').expect(409);
+        } finally {
+            await successDispatcher.shutdown();
+        }
+
+        const repeated = await createFailedDelivery('attention-webhook-reopen');
+        const failureDispatcher = new WebhookDispatcher(repeated.repository, {
+            concurrency: 1,
+            pollMs: 1000,
+            maxAttempts: 1,
+            fetchImplementation: async () => new Response('still unavailable', { status: 503 })
+        });
+        await failureDispatcher.start();
+        try {
+            const app = createApp({
+                pool,
+                jobs: new JobService(jobs, executions),
+                executions,
+                manager,
+                webhookDispatcher: failureDispatcher,
+                security
+            });
+            const item = (await authenticatedRequest(app)
+                .get('/api/attention?kind=webhook_failure&search=' + repeated.deliveryId)
+                .expect(200)).body.items[0];
+            await authenticatedRequest(app).post('/api/attention/' + item.attentionId + '/retry-webhook').expect(200);
+            await waitFor(async () => {
+                const current = await authenticatedRequest(app).get('/api/attention/' + item.attentionId);
+                return current.body.state === 'open' && current.body.reason.includes('HTTP 503');
+            });
+            const delivery = (await executions.listWebhookDeliveries(repeated.execution.executionId))[0]!;
+            expect(delivery).toMatchObject({ status: 'failed', attemptCount: 2, responseStatus: 503 });
+            const reopened = await authenticatedRequest(app).get('/api/attention/' + item.attentionId).expect(200);
+            expect(reopened.body).toMatchObject({
+                attentionId: item.attentionId,
+                state: 'open',
+                resolutionAction: null,
+                resolutionDetails: null
+            });
+        } finally {
+            await failureDispatcher.shutdown();
+        }
+
+        await waitFor(async () => {
+            const audit = await security.audit.list({ limit: 50, action: 'attention.webhook_retry' });
+            return audit.items.length >= 2;
+        });
+    });
+
     it('persists fan-out item attempts, conditional skips, plans, and platform overview data', async () => {
         const definition = job('platform-workflow', 'inactive');
         definition.MAX_CONCURRENCY = 2;
@@ -649,6 +1085,11 @@ describe('Security and authentication lifecycle', () => {
         const operatorApi = request.agent(app).set('Authorization', 'Bearer ' + operatorToken);
 
         await viewerApi.get('/api/jobs').expect(200);
+        await viewerApi.get('/api/attention').expect(200);
+        await viewerApi.post('/api/attention/00000000-0000-4000-8000-000000000000/ignore').expect(403);
+        await viewerApi.get('/api/security/audit?page=1&limit=25').expect(403);
+        await viewerApi.get('/api/security/audit/export?format=json').expect(403);
+        await viewerApi.get('/api/security/audit/1').expect(403);
         await viewerApi.post('/api/jobs/rbac-job/run').expect(403);
         await operatorApi.post('/api/jobs').send(job('operator-cannot-write')).expect(403);
         const run = await operatorApi.post('/api/jobs/rbac-job/run').expect(202);
@@ -757,6 +1198,116 @@ describe('Security and authentication lifecycle', () => {
             await manager.shutdown(1_000);
             await new Promise<void>(resolve => target.close(() => resolve()));
         }
+    });
+
+    it('explores and exports filtered audit history with exact totals and full details', async () => {
+        const action = 'integration.audit.' + Date.now();
+        const actorLabel = 'Scheduler, "primary"';
+        const from = new Date(Date.now() - 60_000).toISOString();
+        for (let index = 0; index < 3; index++) {
+            await security.audit.record({
+                requestId: randomUUID(),
+                actorType: 'system',
+                actorLabel,
+                action,
+                outcome: 'success',
+                statusCode: 201,
+                resourceType: 'job',
+                resourceId: 'audit-resource-' + index,
+                ipAddress: '127.0.0.1',
+                userAgent: 'integration-agent',
+                metadata: { index, note: 'first line\nsecond line' }
+            });
+        }
+        const to = new Date(Date.now() + 60_000).toISOString();
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000, security.secrets);
+        const app = createApp({
+            pool,
+            jobs: new JobService(jobs, executions),
+            executions,
+            manager,
+            security
+        });
+        const filter = [
+            'action=' + encodeURIComponent(action),
+            'actorType=system',
+            'actorLabel=' + encodeURIComponent('primary'),
+            'resource=' + encodeURIComponent('audit-resource'),
+            'outcome=success',
+            'from=' + encodeURIComponent(from),
+            'to=' + encodeURIComponent(to)
+        ].join('&');
+
+        const firstPage = await authenticatedRequest(app)
+            .get('/api/security/audit?' + filter + '&page=1&limit=2')
+            .expect(200);
+        expect(firstPage.body).toMatchObject({ page: 1, pageSize: 2, total: 3, totalPages: 2 });
+        expect(firstPage.body.items).toHaveLength(2);
+        const secondPage = await authenticatedRequest(app)
+            .get('/api/security/audit?' + filter + '&page=2&limit=2')
+            .expect(200);
+        expect(secondPage.body.items).toHaveLength(1);
+        await authenticatedRequest(app)
+            .get('/api/security/audit?' + filter + '&page=99&limit=2')
+            .expect(200)
+            .expect(response => {
+                expect(response.body.items).toEqual([]);
+                expect(response.body).toMatchObject({ page: 99, total: 3, totalPages: 2 });
+            });
+        await authenticatedRequest(app)
+            .get('/api/security/audit?' + filter + '&limit=2')
+            .expect(200)
+            .expect(response => expect(response.body.nextCursor).toBeTypeOf('string'));
+
+        const detail = await authenticatedRequest(app)
+            .get('/api/security/audit/' + firstPage.body.items[0].auditId)
+            .expect(200);
+        expect(detail.body).toMatchObject({
+            actorType: 'system',
+            actorLabel,
+            action,
+            outcome: 'success',
+            statusCode: 201,
+            resourceType: 'job',
+            ipAddress: '127.0.0.1',
+            userAgent: 'integration-agent'
+        });
+        expect(detail.body.requestId).toBeTypeOf('string');
+        expect(detail.body.metadata).toHaveProperty('note', 'first line\nsecond line');
+
+        const csv = await authenticatedRequest(app)
+            .get('/api/security/audit/export?' + filter + '&format=csv')
+            .expect(200)
+            .expect('X-Audit-Export-Total', '3')
+            .expect('X-Audit-Export-Truncated', 'false');
+        expect(csv.text).toContain('"Scheduler, ""primary"""');
+        expect(csv.text).toContain('audit-resource-');
+
+        const json = await authenticatedRequest(app)
+            .get('/api/security/audit/export?' + filter + '&format=json')
+            .expect(200);
+        expect(json.body.metadata).toEqual({ total: 3, exported: 3, truncated: false, limit: 10_000 });
+        expect(json.body.items.map((item: { auditId: string }) => item.auditId)).toEqual([
+            ...firstPage.body.items,
+            ...secondPage.body.items
+        ].map((item: { auditId: string }) => item.auditId));
+
+        expect(await security.audit.listForExport({ action }, 2)).toMatchObject({
+            total: 3,
+            truncated: true
+        });
+        await authenticatedRequest(app).get('/api/security/audit?page=1&cursor=bad').expect(400)
+            .expect(response => expect(response.body.code).toBe('CONFLICTING_PAGINATION'));
+        await authenticatedRequest(app).get('/api/security/audit?page=0').expect(400)
+            .expect(response => expect(response.body.code).toBe('INVALID_PAGE'));
+        await authenticatedRequest(app).get('/api/security/audit?actorType=robot').expect(400)
+            .expect(response => expect(response.body.code).toBe('INVALID_AUDIT_ACTOR_TYPE'));
+        await authenticatedRequest(app).get('/api/security/audit?to=2026-01-01').expect(400)
+            .expect(response => expect(response.body.code).toBe('INVALID_TO'));
+        await authenticatedRequest(app).get('/api/security/audit?to=2026-02-30T00%3A00%3A00Z').expect(400)
+            .expect(response => expect(response.body.code).toBe('INVALID_TO'));
+        await authenticatedRequest(app).get('/api/security/audit/export?format=xml').expect(400)
+            .expect(response => expect(response.body.code).toBe('INVALID_EXPORT_FORMAT'));
     });
 
     it('records actor-aware mutation audits and rejects audit mutation in PostgreSQL', async () => {

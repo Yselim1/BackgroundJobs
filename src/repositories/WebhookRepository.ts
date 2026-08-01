@@ -1,5 +1,6 @@
 import type { DatabasePool } from '../db/pool.js';
 import { withTransaction } from '../db/pool.js';
+import { recordWebhookFailureAttention } from './AttentionRepository.js';
 
 interface WebhookDeliveryRow {
     id: string;
@@ -13,6 +14,7 @@ interface WebhookDeliveryRow {
     response_status: number | null;
     last_error: string | null;
     signing_secret_name: string | null;
+    updated_at: Date;
 }
 
 export interface ClaimedWebhookDelivery {
@@ -29,16 +31,35 @@ export class WebhookRepository {
     constructor(private readonly pool: DatabasePool) {}
 
     async reconcileDelivering(maxAttempts: number): Promise<number> {
-        const result = await this.pool.query(
-            `UPDATE webhook_deliveries
-             SET status = CASE WHEN attempt_count >= $1 THEN 'failed' ELSE 'pending' END,
-                 next_attempt_at = clock_timestamp(),
-                 last_error = 'Server stopped before the delivery result was persisted.',
-                 updated_at = clock_timestamp()
-             WHERE status = 'delivering'`,
-            [maxAttempts]
-        );
-        return result.rowCount ?? 0;
+        return withTransaction(this.pool, async client => {
+            const result = await client.query<WebhookDeliveryRow>(
+                `UPDATE webhook_deliveries
+                 SET status = CASE WHEN attempt_count >= $1 THEN 'failed' ELSE 'pending' END,
+                     next_attempt_at = clock_timestamp(),
+                     last_error = 'Server stopped before the delivery result was persisted.',
+                     updated_at = clock_timestamp()
+                 WHERE status = 'delivering'
+                 RETURNING *`,
+                [maxAttempts]
+            );
+            for (const row of result.rows.filter(item => item.status === 'failed')) {
+                const execution = await client.query<{ job_id: string }>(
+                    'SELECT job_id FROM executions WHERE id = $1',
+                    [row.execution_id]
+                );
+                if (execution.rows[0] !== undefined) {
+                    await recordWebhookFailureAttention(client, {
+                        deliveryId: row.id,
+                        executionId: row.execution_id,
+                        jobId: execution.rows[0].job_id,
+                        reason: row.last_error ?? 'Webhook delivery failed without an error message.',
+                        occurredAt: row.updated_at,
+                        detailSnapshot: webhookFailureSnapshot(row)
+                    });
+                }
+            }
+            return result.rowCount ?? 0;
+        });
     }
 
     async claimDue(now?: Date): Promise<ClaimedWebhookDelivery | undefined> {
@@ -101,7 +122,7 @@ export class WebhookRepository {
             if (row === undefined || row.status !== 'delivering') return 'failed';
             const exhausted = row.attempt_count >= maxAttempts;
             const retryDelayMs = Math.min(3_600_000, 1_000 * (2 ** Math.max(0, row.attempt_count - 1)));
-            await client.query(
+            const updated = await client.query<WebhookDeliveryRow>(
                 `UPDATE webhook_deliveries
                  SET status = $2, response_status = $3, last_error = $4,
                      next_attempt_at = CASE
@@ -109,10 +130,39 @@ export class WebhookRepository {
                          ELSE next_attempt_at
                      END,
                      updated_at = clock_timestamp()
-                 WHERE id = $1`,
+                 WHERE id = $1
+                 RETURNING *`,
                 [deliveryId, exhausted ? 'failed' : 'pending', responseStatus, error, retryDelayMs]
             );
+            const failedRow = updated.rows[0];
+            if (exhausted && failedRow !== undefined) {
+                const execution = await client.query<{ job_id: string }>(
+                    'SELECT job_id FROM executions WHERE id = $1',
+                    [failedRow.execution_id]
+                );
+                if (execution.rows[0] !== undefined) {
+                    await recordWebhookFailureAttention(client, {
+                        deliveryId: failedRow.id,
+                        executionId: failedRow.execution_id,
+                        jobId: execution.rows[0].job_id,
+                        reason: failedRow.last_error ?? 'Webhook delivery failed without an error message.',
+                        occurredAt: failedRow.updated_at,
+                        detailSnapshot: webhookFailureSnapshot(failedRow)
+                    });
+                }
+            }
             return exhausted ? 'failed' : 'pending';
         });
     }
+}
+
+function webhookFailureSnapshot(row: WebhookDeliveryRow): Record<string, unknown> {
+    return {
+        deliveryId: row.id,
+        eventType: row.event_type,
+        url: row.url,
+        attemptCount: row.attempt_count,
+        responseStatus: row.response_status,
+        lastError: row.last_error
+    };
 }

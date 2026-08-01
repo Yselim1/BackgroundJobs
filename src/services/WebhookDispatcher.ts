@@ -38,6 +38,11 @@ export class WebhookDispatcher {
 
     get started(): boolean { return this.servicesStarted; }
 
+    async wake(): Promise<void> {
+        if (!this.acceptingWork) return;
+        await this.tick();
+    }
+
     async start(): Promise<void> {
         if (this.acceptingWork) return;
         await this.deliveries.reconcileDelivering(this.maxAttempts);

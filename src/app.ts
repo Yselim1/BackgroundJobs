@@ -7,7 +7,9 @@ import { createJobsController } from './controllers/jobsController.js';
 import { createLogsController } from './controllers/logsController.js';
 import { createPlatformController } from './controllers/platformController.js';
 import { createAuthController } from './controllers/authController.js';
+import { createAttentionController } from './controllers/attentionController.js';
 import { createSecurityController } from './controllers/securityController.js';
+import { AttentionRepository } from './repositories/AttentionRepository.js';
 import { ExecutionRepository } from './repositories/ExecutionRepository.js';
 import {
     auditMutations,
@@ -59,6 +61,11 @@ export function createApp(dependencies: AppDependencies): express.Express {
     app.use('/api/jobs', createJobsController(dependencies.jobs));
     app.use('/api/executions', createExecutionsController(dependencies.executions, dependencies.manager));
     app.use('/api/logs', requirePermission('executions:read'), createLogsController(dependencies.executions));
+    app.use('/api/attention', createAttentionController(
+        new AttentionRepository(dependencies.pool),
+        dependencies.executions,
+        dependencies.webhookDispatcher
+    ));
     app.use('/api/platform', requirePermission('platform:read'), createPlatformController(
         dependencies.pool,
         dependencies.manager.capacity

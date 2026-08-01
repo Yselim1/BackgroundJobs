@@ -29,6 +29,10 @@ export function createExecutionsController(executions: ExecutionRepository, mana
             throw new AppError('INVALID_DATE_RANGE', 'from must be earlier than to.', 400);
         }
         const cursor = parseOptionalString(req.query.cursor, 'cursor');
+        const page = parseOptionalPage(req.query.page);
+        if (cursor !== undefined && page !== undefined) {
+            throw new AppError('CONFLICTING_PAGINATION', 'page and cursor cannot be combined.', 400);
+        }
         const order = parseOptionalString(req.query.order, 'order') ?? 'desc';
         if (order !== 'asc' && order !== 'desc') {
             throw new AppError('INVALID_ORDER', 'order must be asc or desc.', 400);
@@ -41,7 +45,8 @@ export function createExecutionsController(executions: ExecutionRepository, mana
             ...(trigger === undefined ? {} : { trigger: trigger as ExecutionTrigger }),
             ...(from === undefined ? {} : { from }),
             ...(to === undefined ? {} : { to }),
-            ...(cursor === undefined ? {} : { cursor })
+            ...(cursor === undefined ? {} : { cursor }),
+            ...(page === undefined ? {} : { page })
         }));
     }));
     router.get('/events', requirePermission('executions:read'), (req, res, next) => {
@@ -165,6 +170,18 @@ function parseLimit(value: unknown): number {
     return parsed;
 }
 
+function parseOptionalPage(value: unknown): number | undefined {
+    if (value === undefined) return undefined;
+    if (typeof value !== 'string' || !/^\d+$/u.test(value)) {
+        throw new AppError('INVALID_PAGE', 'page must be an integer.', 400);
+    }
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed < 1) {
+        throw new AppError('INVALID_PAGE', 'page must be at least 1.', 400);
+    }
+    return parsed;
+}
+
 function parseOptionalString(value: unknown, name: string): string | undefined {
     if (value === undefined) return undefined;
     if (typeof value !== 'string' || value.length === 0) throw new AppError(`INVALID_${name.toUpperCase()}`, `${name} must be a non-empty string.`, 400);
@@ -175,10 +192,27 @@ function parseOptionalDate(value: unknown, name: string): Date | undefined {
     const text = parseOptionalString(value, name);
     if (text === undefined) return undefined;
     const timestamp = Date.parse(text);
-    if (!ISO_TIMESTAMP.test(text) || Number.isNaN(timestamp)) {
+    if (!ISO_TIMESTAMP.test(text) || Number.isNaN(timestamp) || !hasValidCalendarComponents(text)) {
         throw new AppError(`INVALID_${name.toUpperCase()}`, `${name} must be a valid ISO-8601 timestamp.`, 400);
     }
     return new Date(timestamp);
+}
+
+function hasValidCalendarComponents(value: string): boolean {
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/u.exec(value);
+    if (match === null) return false;
+    const [year, month, day, hour, minute, second] = match.slice(1).map(Number) as [
+        number, number, number, number, number, number
+    ];
+    const normalized = new Date(0);
+    normalized.setUTCHours(hour, minute, second, 0);
+    normalized.setUTCFullYear(year, month - 1, day);
+    return normalized.getUTCFullYear() === year
+        && normalized.getUTCMonth() === month - 1
+        && normalized.getUTCDate() === day
+        && normalized.getUTCHours() === hour
+        && normalized.getUTCMinutes() === minute
+        && normalized.getUTCSeconds() === second;
 }
 
 function parseEventCursor(value: unknown): bigint {

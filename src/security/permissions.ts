@@ -10,17 +10,20 @@ export type Permission =
     | 'tokens:manage_self'
     | 'users:manage'
     | 'secrets:manage'
-    | 'audit:read';
+    | 'audit:read'
+    | 'attention:read'
+    | 'attention:manage';
 
 const ROLE_PERMISSIONS: Record<SecurityRole, ReadonlySet<Permission>> = {
-    viewer: new Set(['jobs:read', 'executions:read', 'platform:read', 'tokens:manage_self']),
+    viewer: new Set(['jobs:read', 'executions:read', 'platform:read', 'tokens:manage_self', 'attention:read']),
     operator: new Set([
         'jobs:read', 'jobs:run', 'executions:read', 'executions:cancel',
-        'platform:read', 'tokens:manage_self'
+        'platform:read', 'tokens:manage_self', 'attention:read'
     ]),
     admin: new Set([
         'jobs:read', 'jobs:run', 'jobs:write', 'executions:read', 'executions:cancel',
-        'platform:read', 'tokens:manage_self', 'users:manage', 'secrets:manage', 'audit:read'
+        'platform:read', 'tokens:manage_self', 'users:manage', 'secrets:manage', 'audit:read',
+        'attention:read', 'attention:manage'
     ])
 };
 

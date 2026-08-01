@@ -83,6 +83,27 @@ export interface AuditEvent {
     metadata: Record<string, unknown>;
     createdAt: string;
 }
+export interface PageResponse<T> { items: T[]; page: number; pageSize: number; total: number; totalPages: number; }
+export type AttentionKind = 'execution_failure' | 'webhook_failure';
+export type AttentionState = 'open' | 'ignored' | 'resolved';
+export type AttentionResolutionAction = 'rerun' | 'webhook_retry';
+export interface AttentionItem {
+    attentionId: string;
+    kind: AttentionKind;
+    sourceId: string;
+    executionId: string;
+    jobId: string;
+    reason: string;
+    detailSnapshot: Record<string, unknown>;
+    occurredAt: string;
+    state: AttentionState;
+    stateChangedBy: ActorSummary | null;
+    stateChangedAt: string | null;
+    resolutionAction: AttentionResolutionAction | null;
+    resolutionDetails: Record<string, unknown> | null;
+    createdAt: string;
+    updatedAt: string;
+}
 export interface ExecutionSummary { executionId: string; logId: string; jobId: string; trigger: ExecutionTrigger; status: ExecutionStatus; scheduledFor: string | null; requestedAt: string; requestedBy: ActorSummary; startedAt: string | null; finishedAt: string | null; cancelRequestedAt: string | null; cancelRequestedBy: ActorSummary | null; durationMs: number | null; error: { code: string | null; message: string } | null; skipReason: string | null; }
 export interface ExecutionDetail extends ExecutionSummary { input: Record<string, unknown>; jobDefinition: Job; stepResults: Record<string, StepLog>; }
 export interface ExecutionListPage { items: ExecutionSummary[]; nextCursor: string | null; }

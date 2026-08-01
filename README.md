@@ -225,9 +225,9 @@ Roles are intentionally narrow:
 
 | Role | Access |
 | --- | --- |
-| `viewer` | Read jobs, execution history, events, and platform status |
+| `viewer` | Read jobs, execution history, events, platform status, and operational attention |
 | `operator` | Viewer access plus queueing jobs and cancelling executions |
-| `admin` | Operator access plus job definitions, users, roles, managed secrets, and audit history |
+| `admin` | Operator access plus job definitions, attention remediation, users, roles, managed secrets, and audit history |
 
 Job-definition writes remain admin-only because command, Python, script, and plugin executors are privileged code-execution capabilities. Passwords use native Argon2id, repeated failures produce a temporary account lock, password resets revoke sessions and API tokens, disabled users lose active access, and the final active administrator cannot be disabled or demoted.
 
@@ -242,6 +242,19 @@ Security endpoints:
 | `GET/POST/PATCH` | `/api/security/users` | Administer users, roles, and status |
 | `GET/PUT/DELETE` | `/api/security/secrets` | List metadata, store/rotate, or delete secrets |
 | `GET` | `/api/security/audit` | Filter cursor-paginated immutable audit history |
+
+Operational attention endpoints:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/attention` | Exact page-mode listing by state, kind, search, and inclusive day range |
+| `GET` | `/api/attention/:id` | Inspect a durable execution or webhook failure snapshot |
+| `POST` | `/api/attention/:id/ignore` | Hide an open item from shared active counts |
+| `POST` | `/api/attention/:id/restore` | Restore an ignored item to Open |
+| `POST` | `/api/attention/:id/rerun` | Queue the current job definition with the failed execution's original input |
+| `POST` | `/api/attention/:id/retry-webhook` | Requeue the exact webhook delivery for an immediate attempt |
+
+Every role can inspect attention. Mutations are administrator-only, global, and audited. Execution and terminal webhook failures create or reopen stable records transactionally; ignored and resolved records remain inspectable until their source execution is removed by retention.
 
 The audit table records request IDs, actor identity, action, result, resource, client address, and user agent. A PostgreSQL trigger rejects updates and deletes. Passwords, request bodies, API-token values, and managed-secret values are never written to audit metadata.
 
@@ -362,7 +375,7 @@ npm run dev
 
 For production, run `npm run build` inside `dashboard/` and serve its `dist/` output behind the same origin/reverse proxy as the API. `VITE_API_BASE_URL` can point at an origin explicitly listed in `CORS_ALLOWED_ORIGINS`.
 
-The dashboard provides login/logout, permission-aware run/cancel controls, and an admin security console for user lifecycle, role assignment, managed-secret rotation, and immutable audit review. Its Jobs workspace supports URL-persisted filters and sorting, bulk status changes, definition duplication/export, schedule previews, high-frequency activation warnings, managed-secret name suggestions, and dependency previews. Deep-linkable job detail and Logs pages expose workflow plans, actor/input data, attempts, outputs, cancellation state, and webhook deliveries. Tables refresh from the authenticated global SSE feed, while the overview reports worker utilization, queue latency, and the 24-hour success rate.
+The dashboard provides login/logout, permission-aware run/cancel controls, a dedicated `/admin` workspace for users and managed secrets, immutable audit review, and a shared `/attention` triage queue. Attention filters, state tabs, exact pagination, and page sizes persist in the URL; the same detail drawer opens from the overview preview and the full page. Its Jobs workspace supports URL-persisted filters and sorting, bulk status changes, definition duplication/export, schedule previews, high-frequency activation warnings, managed-secret name suggestions, and dependency previews. Deep-linkable job detail and Logs pages expose workflow plans, actor/input data, attempts, outputs, cancellation state, and webhook deliveries. Tables refresh from the authenticated global SSE feed, while polling captures webhook-only attention changes and the overview retains raw 24-hour execution and webhook metrics.
 
 ## Adding Kafka or RabbitMQ later
 

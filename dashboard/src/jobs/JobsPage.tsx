@@ -23,6 +23,7 @@ import {
     type JobForm,
     type StepForm
 } from './jobForm';
+import { sortJobs, type JobSort } from './jobSort';
 
 interface JobsPageProps {
     jobs: Job[];
@@ -37,7 +38,6 @@ interface JobsPageProps {
 
 type StatusFilter = 'all' | 'active' | 'inactive';
 type ScheduleFilter = 'all' | 'scheduled' | 'manual';
-type JobSort = 'name' | 'status' | 'last_run' | 'next_run' | 'steps';
 
 export function JobsPage(props: JobsPageProps) {
     const initial = useMemo(() => routeSearchParams(), []);
@@ -90,13 +90,7 @@ export function JobsPage(props: JobsPageProps) {
                 job.name.toLowerCase().includes(needle) ||
                 job.id.toLowerCase().includes(needle))
         );
-        return matching.sort((left, right) => {
-            const multiplier = direction === 'asc' ? 1 : -1;
-            if (sort === 'steps') return (left.STEPS.length - right.STEPS.length) * multiplier;
-            const leftValue = sort === 'name' ? left.name : sort === 'status' ? left.status : left[sort] ?? '';
-            const rightValue = sort === 'name' ? right.name : sort === 'status' ? right.status : right[sort] ?? '';
-            return String(leftValue).localeCompare(String(rightValue)) * multiplier;
-        });
+        return sortJobs(matching, sort, direction);
     }, [direction, executor, props.jobs, schedule, search, sort, status, timezone]);
 
     const timezones = useMemo(() => [...new Set(props.jobs.map(job => job.timezone))].sort(), [props.jobs]);
@@ -193,7 +187,7 @@ export function JobsPage(props: JobsPageProps) {
                 <label className="select-control"><span>Schedule</span><select value={schedule} onChange={event => setSchedule(event.target.value as ScheduleFilter)}><option value="all">All</option><option value="scheduled">Scheduled</option><option value="manual">Manual only</option></select></label>
                 <label className="select-control"><span>Executor</span><select value={executor} onChange={event => setExecutor(event.target.value)}><option value="all">All</option>{executors.map(value => <option value={value} key={value}>{value}</option>)}</select></label>
                 <label className="select-control"><span>Timezone</span><select value={timezone} onChange={event => setTimezone(event.target.value)}><option value="all">All</option>{timezones.map(value => <option value={value} key={value}>{value}</option>)}</select></label>
-                <label className="select-control"><span>Sort</span><select value={sort} onChange={event => setSort(event.target.value as JobSort)}><option value="name">Name</option><option value="status">Status</option><option value="last_run">Last run</option><option value="next_run">Next run</option><option value="steps">Steps</option></select></label>
+                <label className="select-control"><span>Sort</span><select value={sort} onChange={event => setSort(event.target.value as JobSort)}><option value="name">Name</option><option value="created_at">Created date</option><option value="status">Status</option><option value="last_run">Last run</option><option value="next_run">Next run</option><option value="steps">Steps</option></select></label>
                 <button className="button button-quiet sort-direction" onClick={() => setDirection(value => value === 'asc' ? 'desc' : 'asc')} aria-label="Reverse sort direction">{direction === 'asc' ? '↑' : '↓'}</button>
             </div>
             {props.canWrite && selected.size > 0 && (
@@ -232,7 +226,7 @@ export function JobsPage(props: JobsPageProps) {
                                 <div>
                                     <strong>{job.name}</strong>
                                     <code>{job.id}</code>
-                                    <small>{job.STEPS.length} step{job.STEPS.length === 1 ? '' : 's'}</small>
+                                    <small>{job.STEPS.length} step{job.STEPS.length === 1 ? '' : 's'} · Created {job.created_at === undefined ? 'unknown' : formatRelativeTime(job.created_at)}</small>
                                 </div>
                             </div>
                             <div className="managed-job-schedule">

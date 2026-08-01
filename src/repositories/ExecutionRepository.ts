@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseClient, DatabasePool } from '../db/pool.js';
 import { isUniqueViolation, withTransaction } from '../db/pool.js';
 import { AppError } from '../errors.js';
+import { recordExecutionFailureAttention } from './AttentionRepository.js';
 import type {
     ActorSummary,
     AuthenticatedActor,
@@ -12,6 +13,7 @@ import type {
     ExecutionSummary,
     ExecutionTrigger,
     Job,
+    PageResponse,
     StepAttemptLog,
     StepLog,
     StepStatus,
@@ -104,6 +106,7 @@ export interface ExecutionFilters {
     to?: Date;
     limit: number;
     cursor?: string;
+    page?: number;
     order?: 'asc' | 'desc';
 }
 
@@ -132,6 +135,15 @@ export class ExecutionRepository {
             }
             throw error;
         }
+    }
+
+    async enqueueManualWithClient(
+        client: DatabaseClient,
+        job: Job,
+        input: Record<string, unknown>,
+        actor: AuthenticatedActor
+    ): Promise<string> {
+        return insertExecution(client, job, input, 'manual', null, 'queued', null, actor);
     }
 
     async processDueJobs(now?: Date, limit = 100): Promise<number> {
@@ -225,7 +237,9 @@ export class ExecutionRepository {
         return { ...mapSummary(row), input: row.input, jobDefinition: row.job_definition, stepResults };
     }
 
-    async list(filters: ExecutionFilters): Promise<ExecutionListPage> {
+    async list(filters: ExecutionFilters & { page: number }): Promise<PageResponse<ExecutionSummary>>;
+    async list(filters: ExecutionFilters): Promise<ExecutionListPage>;
+    async list(filters: ExecutionFilters): Promise<ExecutionListPage | PageResponse<ExecutionSummary>> {
         const order = filters.order ?? 'desc';
         const parameters: unknown[] = [];
         const predicates: string[] = [];
@@ -254,8 +268,29 @@ export class ExecutionRepository {
             parameters.push(cursor.requestedAt, cursor.executionId);
             predicates.push(`(requested_at, id) ${order === 'asc' ? '>' : '<'} ($${parameters.length - 1}::timestamptz, $${parameters.length}::uuid)`);
         }
-        parameters.push(filters.limit + 1);
         const where = predicates.length === 0 ? '' : `WHERE ${predicates.join(' AND ')}`;
+        if (filters.page !== undefined) {
+            const count = await this.pool.query<{ count: string }>(
+                `SELECT count(*)::text AS count FROM executions ${where}`,
+                parameters
+            );
+            const total = Number(count.rows[0]?.count ?? 0);
+            const pageParameters = [...parameters, filters.limit, (filters.page - 1) * filters.limit];
+            const result = await this.pool.query<ExecutionRow>(
+                `SELECT * FROM executions ${where}
+                 ORDER BY requested_at ${order.toUpperCase()}, id ${order.toUpperCase()}
+                 LIMIT $${pageParameters.length - 1} OFFSET $${pageParameters.length}`,
+                pageParameters
+            );
+            return {
+                items: result.rows.map(mapSummary),
+                page: filters.page,
+                pageSize: filters.limit,
+                total,
+                totalPages: Math.ceil(total / filters.limit)
+            };
+        }
+        parameters.push(filters.limit + 1);
         const result = await this.pool.query<ExecutionRow>(
             `SELECT * FROM executions ${where} ORDER BY requested_at ${order.toUpperCase()}, id ${order.toUpperCase()} LIMIT $${parameters.length}`,
             parameters
@@ -434,6 +469,20 @@ export class ExecutionRepository {
                 durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
                 ...(errorCode === null ? {} : { errorCode }), ...(errorMessage === null ? {} : { error: errorMessage })
             });
+            if (status === 'failed') {
+                await recordExecutionFailureAttention(client, {
+                    executionId: row.id,
+                    jobId: row.job_id,
+                    reason: row.error_message ?? 'Execution failed without an error message.',
+                    occurredAt: row.finished_at ?? row.requested_at,
+                    detailSnapshot: {
+                        errorCode: row.error_code,
+                        error: row.error_message,
+                        trigger: row.trigger_type,
+                        input: row.input
+                    }
+                });
+            }
             await enqueueTerminalWebhooks(client, row);
         });
     }
@@ -585,6 +634,19 @@ export class ExecutionRepository {
                 await appendEvent(client, row.id, 'execution.failed', {
                     status: 'failed', errorCode: 'SERVER_INTERRUPTED',
                     error: 'Server stopped before execution completed.', finishedAt: row.finished_at?.toISOString() ?? null
+                });
+                await recordExecutionFailureAttention(client, {
+                    executionId: row.id,
+                    jobId: row.job_id,
+                    reason: row.error_message ?? 'Server stopped before execution completed.',
+                    occurredAt: row.finished_at ?? row.requested_at,
+                    detailSnapshot: {
+                        errorCode: row.error_code,
+                        error: row.error_message,
+                        trigger: row.trigger_type,
+                        input: row.input,
+                        interrupted: true
+                    }
                 });
                 await enqueueTerminalWebhooks(client, row);
             }

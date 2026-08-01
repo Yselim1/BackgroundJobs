@@ -1,42 +1,39 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import {
     AUTH_EXPIRED_EVENT,
     cancelExecution,
-    createSecurityUser,
-    deleteManagedSecret,
     executionFeedUrl,
-    getAuditEvents,
+    getAttentionItem,
     getCurrentUser,
     getExecution,
     getExecutions,
     getWebhookDeliveries,
     getJobs,
-    getManagedSecrets,
     getOverview,
-    getSecurityUsers,
     login,
     logout,
-    putManagedSecret,
     runJob,
-    updateSecurityUser
 } from './api';
+import { AdminPage } from './admin/AdminPage';
+import { AttentionDrawer } from './attention/AttentionDrawer';
+import { AttentionPage } from './attention/AttentionPage';
+import { AuditPage } from './audit/AuditPage';
 import { formatDuration, formatRelativeTime, titleCase } from './format';
 import { JobsPage } from './jobs/JobsPage';
 import { JobDetailPage } from './jobs/JobDetailPage';
 import { LogsPage } from './logs/LogsPage';
+import { Pagination } from './PageControls';
+import { dashboardNavigation } from './permissions';
 import { navigate, parseDashboardRoute, type DashboardRoute } from './routes';
 import { useModalBehavior } from './useModalBehavior';
 import type {
-    AuditEvent,
+    AttentionItem,
     AuthSession,
     ExecutionDetail,
     ExecutionStatus,
     ExecutionSummary,
     Job,
-    ManagedSecret,
     PlatformOverview,
-    SecurityRole,
-    SecurityUser,
     WebhookDelivery
 } from './types';
 
@@ -103,17 +100,25 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
     const [jobs, setJobs] = useState<Job[]>([]);
     const [executions, setExecutions] = useState<ExecutionSummary[]>([]);
     const [status, setStatus] = useState<ExecutionStatus | 'all'>('all');
+    const [executionPage, setExecutionPage] = useState(1);
+    const [executionTotal, setExecutionTotal] = useState(0);
+    const [executionTotalPages, setExecutionTotalPages] = useState(0);
     const [selected, setSelected] = useState<ExecutionDetail>();
     const [webhooks, setWebhooks] = useState<WebhookDelivery[]>([]);
     const [liveVersion, setLiveVersion] = useState(0);
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState<string>();
     const [error, setError] = useState<string>();
-    const [securityOpen, setSecurityOpen] = useState(false);
+    const [selectedAttention, setSelectedAttention] = useState<AttentionItem>();
+    const [attentionRefreshVersion, setAttentionRefreshVersion] = useState(0);
     const canRun = props.session.permissions.includes('jobs:run');
     const canCancel = props.session.permissions.includes('executions:cancel');
     const canWriteJobs = props.session.permissions.includes('jobs:write');
-    const canAdminister = props.session.user.role === 'admin';
+    const navigation = dashboardNavigation(props.session.permissions);
+    const canReadAudit = navigation.audit;
+    const canReadAttention = navigation.attention;
+    const canManageAttention = props.session.permissions.includes('attention:manage');
+    const canViewAdmin = navigation.administration;
 
     const refresh = useCallback(async (quiet = false) => {
         if (!quiet) setLoading(true);
@@ -121,18 +126,29 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
             const [nextOverview, nextJobs, nextExecutions] = await Promise.all([
                 getOverview(),
                 getJobs(),
-                getExecutions(status === 'all' ? {} : { status })
+                getExecutions({
+                    ...(status === 'all' ? {} : { status }),
+                    page: executionPage,
+                    limit: 10
+                })
             ]);
+            const lastValidPage = Math.max(1, nextExecutions.totalPages);
+            if (executionPage > lastValidPage) {
+                setExecutionPage(lastValidPage);
+                return;
+            }
             setOverview(nextOverview);
             setJobs(nextJobs);
             setExecutions(nextExecutions.items);
+            setExecutionTotal(nextExecutions.total);
+            setExecutionTotalPages(nextExecutions.totalPages);
             setError(undefined);
         } catch (caught) {
             setError(caught instanceof Error ? caught.message : String(caught));
         } finally {
             setLoading(false);
         }
-    }, [status]);
+    }, [executionPage, status]);
 
     const openExecution = useCallback(async (executionId: string) => {
         try {
@@ -142,6 +158,15 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
             ]);
             setSelected(execution);
             setWebhooks(deliveries);
+            setError(undefined);
+        } catch (caught) {
+            setError(caught instanceof Error ? caught.message : String(caught));
+        }
+    }, []);
+
+    const openAttention = useCallback(async (attentionId: string) => {
+        try {
+            setSelectedAttention(await getAttentionItem(attentionId));
             setError(undefined);
         } catch (caught) {
             setError(caught instanceof Error ? caught.message : String(caught));
@@ -226,28 +251,21 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                         Jobs <span>{jobs.length}</span>
                     </a>
                     <a href="/logs" aria-current={route.page === 'logs' ? 'page' : undefined}>Logs</a>
+                    {canReadAttention && <a href="/attention" aria-current={route.page === 'attention' ? 'page' : undefined}>Attention</a>}
+                    {canReadAudit && <a href="/audit" aria-current={route.page === 'audit' ? 'page' : undefined}>Audit</a>}
+                    {canViewAdmin && <a href="/admin" aria-current={route.page === 'admin' ? 'page' : undefined}>Administration</a>}
                 </nav>
-                <div className="system-state">
-                    <span className="pulse" aria-hidden="true" />
-                    <span>System online</span>
-                    <span className="updated">Updated {formatRelativeTime(overview?.generatedAt ?? null)}</span>
-                </div>
-                <div className="account-actions">
-                    <div className="account-copy">
-                        <strong>{props.session.user.displayName}</strong>
-                        <small>{props.session.user.role} · {props.session.user.email}</small>
-                    </div>
-                    {canAdminister && (
-                        <button className="button button-quiet" onClick={() => setSecurityOpen(true)}>
-                            Security
-                        </button>
-                    )}
-                    <button className="button button-quiet" onClick={() => void refresh()} disabled={loading}>
-                        {loading ? 'Refreshing…' : 'Refresh'}
-                    </button>
-                    <button className="button button-quiet" onClick={() => void handleLogout()}>
-                        Sign out
-                    </button>
+                <div className="header-tools">
+                    <span className="system-badge" title="Scheduler and dispatchers are online">
+                        <span className="pulse" aria-hidden="true" />
+                        Online
+                    </span>
+                    <ProfileMenu
+                        session={props.session}
+                        loading={loading}
+                        onRefresh={() => refresh()}
+                        onLogout={handleLogout}
+                    />
                 </div>
             </header>
 
@@ -265,12 +283,56 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                             <Metric label="Active jobs" value={overview?.jobs.active} note={(overview?.jobs.inactive ?? 0) + ' inactive'} />
                             <Metric label="Running now" value={overview?.executions.running} note={(overview?.executions.queued ?? 0) + ' queued'} tone="teal" />
                             <Metric label="Succeeded · 24h" value={overview?.executions.success24h} note={'Avg ' + formatDuration(overview?.executions.averageSuccessDurationMs24h)} />
-                            <Metric label="Needs attention" value={(overview?.executions.failed24h ?? 0) + (overview?.webhooks.failed ?? 0)} note={(overview?.webhooks.failed ?? 0) + ' webhook failures'} tone="orange" />
+                            <Metric
+                                label="Needs attention"
+                                value={(overview?.attention.openExecutionFailures ?? 0) + (overview?.attention.openWebhookFailures ?? 0)}
+                                note={(overview?.attention.openExecutionFailures ?? 0) + ' executions · ' + (overview?.attention.openWebhookFailures ?? 0) + ' webhooks'}
+                                tone="orange"
+                                onClick={() => document.getElementById('attention-queue')?.scrollIntoView({ behavior: 'smooth' })}
+                            />
                         </section>
                         <section className="operations-strip" aria-label="Worker and queue health">
                             <DetailMetric label="Worker utilization" value={(overview?.workers.utilizationPercent ?? 0) + '%'} note={(overview?.workers.busy ?? 0) + ' of ' + (overview?.workers.capacity ?? 0) + ' workers busy'} />
                             <DetailMetric label="Queue latency · 24h" value={formatDuration(overview?.executions.averageQueueLatencyMs24h)} note={'Oldest queued ' + formatDuration(overview?.executions.oldestQueuedAgeMs)} />
                             <DetailMetric label="Success rate · 24h" value={overview?.executions.successRate24h === null || overview?.executions.successRate24h === undefined ? '—' : overview.executions.successRate24h + '%'} note={(overview?.executions.failed24h ?? 0) + ' failed executions'} />
+                        </section>
+
+                        <section className="panel attention-panel" id="attention-queue" aria-label="Attention queue">
+                            <div className="panel-heading">
+                                <div>
+                                    <p className="eyebrow">Attention queue</p>
+                                    <h2>Failures to inspect</h2>
+                                </div>
+                                <a className="button button-quiet" href="/attention">View all</a>
+                            </div>
+                            <div className="attention-columns">
+                                <div>
+                                    <h3>Failed executions <span>{overview?.attention.openExecutionFailures ?? 0}</span></h3>
+                                    <div className="attention-list">
+                                        {overview?.attention.failedExecutions.map(item => (
+                                            <button key={item.attentionId} onClick={() => void openAttention(item.attentionId)}>
+                                                <span><strong>{item.jobId}</strong><code>{item.sourceId}</code></span>
+                                                <span className="attention-reason">{item.reason}</span>
+                                                <time>{formatRelativeTime(item.occurredAt)}</time>
+                                            </button>
+                                        ))}
+                                        {(overview?.attention.failedExecutions.length ?? 0) === 0 && <p>No open execution failures.</p>}
+                                    </div>
+                                </div>
+                                <div>
+                                    <h3>Failed webhooks <span>{overview?.attention.openWebhookFailures ?? 0}</span></h3>
+                                    <div className="attention-list">
+                                        {overview?.attention.failedWebhooks.map(item => (
+                                            <button key={item.attentionId} onClick={() => void openAttention(item.attentionId)}>
+                                                <span><strong>{item.jobId}</strong><code>{item.executionId}</code></span>
+                                                <span className="attention-reason">{item.reason}</span>
+                                                <time>{formatRelativeTime(item.occurredAt)} · {Number(item.detailSnapshot.attemptCount ?? 0)} attempts</time>
+                                            </button>
+                                        ))}
+                                        {(overview?.attention.failedWebhooks.length ?? 0) === 0 && <p>No open webhook failures.</p>}
+                                    </div>
+                                </div>
+                            </div>
                         </section>
 
                         <section className="panel runs-panel">
@@ -281,7 +343,10 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                             </div>
                             <label className="select-control">
                                 <span>Status</span>
-                                <select value={status} onChange={event => setStatus(event.target.value as ExecutionStatus | 'all')}>
+                                <select value={status} onChange={event => {
+                                    setExecutionPage(1);
+                                    setStatus(event.target.value as ExecutionStatus | 'all');
+                                }}>
                                     {EXECUTION_STATUSES.map(item => <option key={item} value={item}>{titleCase(item)}</option>)}
                                 </select>
                             </label>
@@ -312,6 +377,14 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                                 </tbody>
                             </table>
                         </div>
+                        <Pagination
+                            page={executionPage}
+                            pageSize={10}
+                            total={executionTotal}
+                            totalPages={executionTotalPages}
+                            loading={loading}
+                            onPage={setExecutionPage}
+                        />
                         </section>
                     </>
                 ) : route.page === 'jobs' ? (
@@ -336,6 +409,24 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                         onOpenExecution={openExecution}
                         onError={setError}
                     />
+                ) : route.page === 'attention' ? (
+                    canReadAttention ? (
+                        <AttentionPage
+                            refreshVersion={attentionRefreshVersion}
+                            onOpen={attentionId => void openAttention(attentionId)}
+                            onError={setError}
+                        />
+                    ) : (
+                        <section className="page-heading"><div><p className="eyebrow">Restricted</p><h1>Attention</h1><p>You do not have permission to inspect attention items.</p></div></section>
+                    )
+                ) : route.page === 'admin' ? (
+                    <AdminPage permissions={props.session.permissions} onError={setError} />
+                ) : route.page === 'audit' ? (
+                    canReadAudit ? (
+                        <AuditPage liveVersion={liveVersion} onError={setError} />
+                    ) : (
+                        <section className="page-heading"><div><p className="eyebrow">Restricted</p><h1>Audit</h1><p>You do not have permission to view audit events.</p></div></section>
+                    )
                 ) : (
                     <LogsPage
                         jobs={jobs}
@@ -359,11 +450,107 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                 onCancel={handleCancel}
                 canCancel={canCancel}
             />
-            {canAdminister && (
-                <SecurityPanel open={securityOpen} onClose={() => setSecurityOpen(false)} />
+            <AttentionDrawer
+                item={selectedAttention}
+                canManage={canManageAttention}
+                onClose={() => setSelectedAttention(undefined)}
+                onChanged={async item => {
+                    setSelectedAttention(item);
+                    setAttentionRefreshVersion(value => value + 1);
+                    await refresh(true);
+                }}
+                onOpenExecution={executionId => {
+                    setSelectedAttention(undefined);
+                    void openExecution(executionId);
+                }}
+                onError={setError}
+            />
+        </div>
+    );
+}
+
+function ProfileMenu(props: {
+    session: AuthSession;
+    loading: boolean;
+    onRefresh: () => Promise<void>;
+    onLogout: () => Promise<void>;
+}) {
+    const [open, setOpen] = useState(false);
+    const root = useRef<HTMLDivElement>(null);
+    const initials = profileInitials(props.session.user.displayName, props.session.user.email);
+
+    useEffect(() => {
+        if (!open) return;
+        const closeOutside = (event: PointerEvent) => {
+            if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false);
+        };
+        const closeOnEscape = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') setOpen(false);
+        };
+        document.addEventListener('pointerdown', closeOutside);
+        document.addEventListener('keydown', closeOnEscape);
+        return () => {
+            document.removeEventListener('pointerdown', closeOutside);
+            document.removeEventListener('keydown', closeOnEscape);
+        };
+    }, [open]);
+
+    return (
+        <div className='profile-menu' ref={root}>
+            <button
+                className='profile-trigger'
+                aria-label={`Open account menu for ${props.session.user.displayName}`}
+                aria-haspopup='menu'
+                aria-expanded={open}
+                onClick={() => setOpen(value => !value)}
+            >
+                <span className='profile-avatar' aria-hidden='true'>{initials}</span>
+                <span className='profile-chevron' aria-hidden='true'>⌄</span>
+            </button>
+            {open && (
+                <div className='profile-popover' role='menu'>
+                    <div className='profile-identity'>
+                        <span className='profile-avatar profile-avatar-large' aria-hidden='true'>{initials}</span>
+                        <div>
+                            <strong>{props.session.user.displayName}</strong>
+                            <span>{props.session.user.email}</span>
+                            <small>{titleCase(props.session.user.role)} account</small>
+                        </div>
+                    </div>
+                    <div className='profile-actions'>
+                        <button
+                            role='menuitem'
+                            disabled={props.loading}
+                            onClick={() => {
+                                setOpen(false);
+                                void props.onRefresh();
+                            }}
+                        >
+                            <span aria-hidden='true'>↻</span>
+                            {props.loading ? 'Refreshing…' : 'Refresh dashboard'}
+                        </button>
+                        <button
+                            className='profile-signout'
+                            role='menuitem'
+                            onClick={() => {
+                                setOpen(false);
+                                void props.onLogout();
+                            }}
+                        >
+                            <span aria-hidden='true'>↪</span>
+                            Sign out
+                        </button>
+                    </div>
+                </div>
             )}
         </div>
     );
+}
+
+export function profileInitials(displayName: string, email: string): string {
+    const initials = displayName.trim().split(/\s+/u).filter(Boolean).slice(0, 2)
+        .map(part => part[0]?.toUpperCase() ?? '').join('');
+    return initials || email.trim()[0]?.toUpperCase() || '?';
 }
 
 function LoginScreen(props: { onAuthenticated: (session: AuthSession) => void }) {
@@ -414,196 +601,18 @@ function LoginScreen(props: { onAuthenticated: (session: AuthSession) => void })
     );
 }
 
-function SecurityPanel(props: { open: boolean; onClose: () => void }) {
-    useModalBehavior(props.open, props.onClose);
-    const [users, setUsers] = useState<SecurityUser[]>([]);
-    const [secrets, setSecrets] = useState<ManagedSecret[]>([]);
-    const [audit, setAudit] = useState<AuditEvent[]>([]);
-    const [secretsConfigured, setSecretsConfigured] = useState(false);
-    const [error, setError] = useState<string>();
-    const [busy, setBusy] = useState<string>();
-    const [newUser, setNewUser] = useState({
-        email: '', displayName: '', password: '', role: 'viewer' as SecurityRole
-    });
-    const [newSecret, setNewSecret] = useState({ name: '', value: '', description: '' });
-
-    const refresh = useCallback(async () => {
-        try {
-            const [nextUsers, nextSecrets, nextAudit] = await Promise.all([
-                getSecurityUsers(), getManagedSecrets(), getAuditEvents()
-            ]);
-            setUsers(nextUsers);
-            setSecrets(nextSecrets.items);
-            setSecretsConfigured(nextSecrets.configured);
-            setAudit(nextAudit);
-            setError(undefined);
-        } catch (caught) {
-            setError(caught instanceof Error ? caught.message : String(caught));
-        }
-    }, []);
-
-    useEffect(() => {
-        if (props.open) void refresh();
-    }, [props.open, refresh]);
-
-    const submitUser = async (event: FormEvent) => {
-        event.preventDefault();
-        setBusy('create-user');
-        try {
-            await createSecurityUser(newUser);
-            setNewUser({ email: '', displayName: '', password: '', role: 'viewer' });
-            await refresh();
-        } catch (caught) {
-            setError(caught instanceof Error ? caught.message : String(caught));
-        } finally {
-            setBusy(undefined);
-        }
-    };
-
-    const changeUser = async (
-        user: SecurityUser,
-        update: { role?: SecurityRole; status?: 'active' | 'disabled' }
-    ) => {
-        setBusy('user:' + user.userId);
-        try {
-            await updateSecurityUser(user.userId, update);
-            await refresh();
-        } catch (caught) {
-            setError(caught instanceof Error ? caught.message : String(caught));
-        } finally {
-            setBusy(undefined);
-        }
-    };
-
-    const submitSecret = async (event: FormEvent) => {
-        event.preventDefault();
-        setBusy('create-secret');
-        try {
-            await putManagedSecret(newSecret.name, newSecret.value, newSecret.description);
-            setNewSecret({ name: '', value: '', description: '' });
-            await refresh();
-        } catch (caught) {
-            setError(caught instanceof Error ? caught.message : String(caught));
-        } finally {
-            setBusy(undefined);
-        }
-    };
-
-    const removeSecret = async (secret: ManagedSecret) => {
-        if (!window.confirm('Delete managed secret ' + secret.name + '? Existing jobs may fail until it is restored.')) return;
-        setBusy('secret:' + secret.secretId);
-        try {
-            await deleteManagedSecret(secret.name);
-            await refresh();
-        } catch (caught) {
-            setError(caught instanceof Error ? caught.message : String(caught));
-        } finally {
-            setBusy(undefined);
-        }
-    };
-
-    return (
+function Metric(props: { label: string; value?: number; note: string; tone?: string; onClick?: () => void }) {
+    const content = (
         <>
-            <button
-                className={'drawer-backdrop ' + (props.open ? 'visible' : '')}
-                onClick={props.onClose}
-                aria-label="Close security console"
-                tabIndex={props.open ? 0 : -1}
-            />
-            <aside
-                className={'security-panel ' + (props.open ? 'open' : '')}
-                aria-hidden={!props.open}
-                aria-modal="true"
-                aria-labelledby="security-modal-title"
-                role="dialog"
-            >
-                <div className="drawer-head">
-                    <div><p className="eyebrow">Administration</p><h2 id="security-modal-title">Security console</h2></div>
-                    <button className="close" onClick={props.onClose} aria-label="Close">×</button>
-                </div>
-                {error !== undefined && <div className="error-banner" role="alert">{error}</div>}
-
-                <section className="security-section">
-                    <div className="section-title"><h3>Users</h3><span>{users.length} identities</span></div>
-                    <form className="security-form user-form" onSubmit={event => void submitUser(event)}>
-                        <input placeholder="Display name" value={newUser.displayName} onChange={event => setNewUser({ ...newUser, displayName: event.target.value })} required />
-                        <input type="email" placeholder="Email" value={newUser.email} onChange={event => setNewUser({ ...newUser, email: event.target.value })} required />
-                        <input type="password" minLength={12} placeholder="Temporary password" value={newUser.password} onChange={event => setNewUser({ ...newUser, password: event.target.value })} required />
-                        <select value={newUser.role} onChange={event => setNewUser({ ...newUser, role: event.target.value as SecurityRole })}>
-                            <option value="viewer">Viewer</option><option value="operator">Operator</option><option value="admin">Admin</option>
-                        </select>
-                        <button className="button button-primary" disabled={busy === 'create-user'}>Create user</button>
-                    </form>
-                    <div className="security-list">
-                        {users.map(user => (
-                            <article key={user.userId}>
-                                <div><strong>{user.displayName}</strong><small>{user.email} · {user.status}</small></div>
-                                <select
-                                    value={user.role}
-                                    disabled={busy === 'user:' + user.userId}
-                                    onChange={event => void changeUser(user, { role: event.target.value as SecurityRole })}
-                                >
-                                    <option value="viewer">Viewer</option><option value="operator">Operator</option><option value="admin">Admin</option>
-                                </select>
-                                <button
-                                    className="button button-quiet"
-                                    disabled={busy === 'user:' + user.userId}
-                                    onClick={() => void changeUser(user, { status: user.status === 'active' ? 'disabled' : 'active' })}
-                                >
-                                    {user.status === 'active' ? 'Disable' : 'Enable'}
-                                </button>
-                            </article>
-                        ))}
-                    </div>
-                </section>
-
-                <section className="security-section">
-                    <div className="section-title">
-                        <h3>Managed secrets</h3>
-                        <span>{secretsConfigured ? 'Encryption configured' : 'SECRETS_MASTER_KEY required'}</span>
-                    </div>
-                    <form className="security-form secret-form" onSubmit={event => void submitSecret(event)}>
-                        <input placeholder="SECRET_NAME" value={newSecret.name} onChange={event => setNewSecret({ ...newSecret, name: event.target.value.toUpperCase() })} required />
-                        <input type="password" placeholder="Secret value" value={newSecret.value} onChange={event => setNewSecret({ ...newSecret, value: event.target.value })} required />
-                        <input placeholder="Description (optional)" value={newSecret.description} onChange={event => setNewSecret({ ...newSecret, description: event.target.value })} />
-                        <button className="button button-primary" disabled={!secretsConfigured || busy === 'create-secret'}>Store or rotate</button>
-                    </form>
-                    <div className="security-list">
-                        {secrets.map(secret => (
-                            <article key={secret.secretId}>
-                                <div><strong>{secret.name}</strong><small>{secret.description ?? 'No description'} · version {secret.keyVersion}</small></div>
-                                <span>{formatRelativeTime(secret.updatedAt)}</span>
-                                <button className="button button-quiet" onClick={() => void removeSecret(secret)}>Delete</button>
-                            </article>
-                        ))}
-                    </div>
-                </section>
-
-                <section className="security-section">
-                    <div className="section-title"><h3>Audit trail</h3><span>Append-only</span></div>
-                    <div className="audit-list">
-                        {audit.map(event => (
-                            <article key={event.auditId}>
-                                <StatusPill status={event.outcome} />
-                                <div><strong>{event.action}</strong><small>{event.actorLabel} · {event.resourceId ?? event.resourceType ?? 'system'}</small></div>
-                                <time>{formatRelativeTime(event.createdAt)}</time>
-                            </article>
-                        ))}
-                    </div>
-                </section>
-            </aside>
-        </>
-    );
-}
-
-function Metric(props: { label: string; value?: number; note: string; tone?: string }) {
-    return (
-        <article className={'metric ' + (props.tone ?? '')}>
             <span>{props.label}</span>
             <strong>{props.value ?? '—'}</strong>
             <small>{props.note}</small>
-        </article>
+        </>
     );
+    if (props.onClick !== undefined) {
+        return <button className={'metric metric-action ' + (props.tone ?? '')} onClick={props.onClick}>{content}</button>;
+    }
+    return <article className={'metric ' + (props.tone ?? '')}>{content}</article>;
 }
 
 function DetailMetric(props: { label: string; value: string; note: string }) {
