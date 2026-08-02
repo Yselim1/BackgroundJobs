@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { resolveContextTemplates } from '../utils/contextResolver.js';
 
 const TEMPLATE = /\{\{[^{}]+\}\}/u;
@@ -11,6 +12,18 @@ export function assertLiteral(value: string, label: string): void {
     if (containsContextTemplate(value)) {
         throw new Error(`${label} must be literal and cannot contain context templates.`);
     }
+}
+
+export function resolveWorkerCwd(value: string | undefined): string | undefined {
+    const configuredRoot = process.env.WORKER_WORK_DIRECTORY;
+    if (configuredRoot === undefined) return value;
+    const root = path.resolve(configuredRoot);
+    const candidate = value === undefined ? root : path.resolve(root, value);
+    const relative = path.relative(root, candidate);
+    if (relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) {
+        return candidate;
+    }
+    throw new Error(`COMMAND CWD must stay within WORKER_WORK_DIRECTORY (${root}).`);
 }
 
 export function resolveSafeEnvironment(

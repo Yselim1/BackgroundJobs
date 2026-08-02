@@ -89,7 +89,7 @@ function resolveString(
      * If the entire string is a template, return the original value.
      *
      * For example:
-     * "{{login.data.user}}" -> { id: 42, name: "Yavuz" }
+     * "{{login.data.user}}" -> { id: 42, name: "Example User" }
      *
      * Returning the original value prevents objects from becoming
      * the string "[object Object]".

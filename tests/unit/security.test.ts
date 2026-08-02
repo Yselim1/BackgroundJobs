@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../../src/config.js';
 import { hashPassword, verifyPassword } from '../../src/security/password.js';
@@ -51,6 +52,17 @@ describe('security primitives', () => {
             SECRETS_MASTER_KEY: Buffer.alloc(32, 1).toString('base64'),
             CORS_ALLOWED_ORIGINS: 'https://example.test'
         }).corsAllowedOrigins).toEqual(['https://example.test']);
+        expect(loadConfig({}).embeddedWorkerEnabled).toBe(true);
+        expect(loadConfig({ EMBEDDED_WORKER_ENABLED: 'false' }).embeddedWorkerEnabled).toBe(false);
+        expect(loadConfig({
+            NODE_ENV: 'production',
+            AUTH_COOKIE_SECURE: 'true',
+            CORS_ALLOWED_ORIGINS: 'https://example.test'
+        }).embeddedWorkerEnabled).toBe(false);
+        expect(loadConfig({ WORKER_REQUIRE_NON_ADMIN: 'true' }).workerRequireNonAdmin).toBe(true);
+        expect(loadConfig({ WORKER_WORK_DIRECTORY: path.resolve('worker-data') }).workerWorkDirectory)
+            .toBe(path.resolve('worker-data'));
+        expect(() => loadConfig({ WORKER_WORK_DIRECTORY: 'relative-worker-data' })).toThrow(/absolute path/u);
     });
 
     it('redacts managed secret values from persisted step outputs and errors', async () => {

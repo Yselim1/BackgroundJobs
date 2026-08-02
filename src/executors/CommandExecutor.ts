@@ -2,7 +2,7 @@ import type { Step } from '../types/index.js';
 import type { ExecutorOptions, IStepExecutor } from './IStepExecutor.js';
 import { buildChildEnvironment, runProcess } from './processRunner.js';
 import { resolveContextTemplates } from '../utils/contextResolver.js';
-import { assertLiteral, resolveSafeEnvironment } from './executorSafety.js';
+import { assertLiteral, resolveSafeEnvironment, resolveWorkerCwd } from './executorSafety.js';
 
 export class CommandExecutor implements IStepExecutor {
     async execute(step: Step, context: Record<string, unknown>, options: ExecutorOptions): Promise<unknown> {
@@ -18,11 +18,12 @@ export class CommandExecutor implements IStepExecutor {
         if (cwd !== undefined && typeof cwd !== 'string') throw new Error('COMMAND CWD must be a string.');
         if (cwd !== undefined) assertLiteral(cwd, 'COMMAND CWD');
         const env = resolveSafeEnvironment(params.ENV, context, 'COMMAND ENV');
+        const resolvedCwd = resolveWorkerCwd(cwd);
         try {
             const base = {
                 timeoutMs,
                 signal: options.signal,
-                ...(cwd === undefined ? {} : { cwd }),
+                ...(resolvedCwd === undefined ? {} : { cwd: resolvedCwd }),
                 env: buildChildEnvironment(env)
             };
             const result = command !== undefined

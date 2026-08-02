@@ -1,13 +1,15 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { DatabasePool } from './pool.js';
 
 const MIGRATION_PATTERN = /^(\d{3,})_(.+)\.sql$/u;
 const ADVISORY_LOCK_KEY = 'backgroundjobs-framework:migrations';
+const DEFAULT_MIGRATIONS_DIRECTORY = fileURLToPath(new URL('../../migrations', import.meta.url));
 
 export interface Migration { version: number; name: string; sql: string; }
 
-export async function readMigrations(directory = path.resolve(process.cwd(), 'migrations')): Promise<Migration[]> {
+export async function readMigrations(directory = DEFAULT_MIGRATIONS_DIRECTORY): Promise<Migration[]> {
     const names = await fs.readdir(directory);
     const migrations = await Promise.all(names.flatMap(name => {
         const match = MIGRATION_PATTERN.exec(name);

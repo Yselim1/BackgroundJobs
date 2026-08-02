@@ -5,8 +5,10 @@ import { ExecutionRepository } from './repositories/ExecutionRepository.js';
 import { WorkerRepository } from './repositories/WorkerRepository.js';
 import { createSecurityRuntime } from './security/runtime.js';
 import { JobExecutionManager } from './services/JobExecutionManager.js';
+import { prepareWorkerRuntime } from './security/workerRuntime.js';
 
 const config = loadConfig();
+await prepareWorkerRuntime(config);
 const pool = createPool(config.databaseUrl, config.dbPoolMax);
 
 try {

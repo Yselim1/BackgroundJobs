@@ -16,6 +16,8 @@
   "scripts": {
     "docker:ensure": "node scripts/ensure-docker.mjs",
     "db:start": "npm run docker:ensure && docker compose up -d --wait postgres",
+    "worker:isolated": "npm run docker:ensure && docker compose --profile worker up -d --build isolated-worker",
+    "worker:isolated:stop": "docker compose --profile worker stop isolated-worker",
     "dev:setup": "npm run db:start && npm run migrate",
     "dev:server": "node --watch --env-file-if-exists=.env --import tsx src/index.ts",
     "dev:worker": "node --watch --env-file-if-exists=.env --import tsx src/worker.ts",

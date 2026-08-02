@@ -1,0 +1,9 @@
+.git
+.env
+dashboard
+dist
+docs
+examples
+node_modules
+tests
+*.log

@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 export interface AppConfig {
     databaseUrl: string;
     dbPoolMax: number;
@@ -7,6 +9,9 @@ export interface AppConfig {
     workerHeartbeatMs: number;
     executionLeaseMs: number;
     workerStaleMs: number;
+    embeddedWorkerEnabled: boolean;
+    workerWorkDirectory: string | undefined;
+    workerRequireNonAdmin: boolean;
     schedulerPollMs: number;
     shutdownGraceMs: number;
     webhookConcurrency: number;
@@ -33,6 +38,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         workerHeartbeatMs: positiveInteger(env.WORKER_HEARTBEAT_MS, 5_000, 'WORKER_HEARTBEAT_MS'),
         executionLeaseMs: positiveInteger(env.EXECUTION_LEASE_MS, 20_000, 'EXECUTION_LEASE_MS'),
         workerStaleMs: positiveInteger(env.WORKER_STALE_MS, 30_000, 'WORKER_STALE_MS'),
+        embeddedWorkerEnabled: booleanValue(
+            env.EMBEDDED_WORKER_ENABLED,
+            env.NODE_ENV !== 'production',
+            'EMBEDDED_WORKER_ENABLED'
+        ),
+        workerWorkDirectory: absolutePath(env.WORKER_WORK_DIRECTORY, 'WORKER_WORK_DIRECTORY'),
+        workerRequireNonAdmin: booleanValue(env.WORKER_REQUIRE_NON_ADMIN, false, 'WORKER_REQUIRE_NON_ADMIN'),
         schedulerPollMs: positiveInteger(env.SCHEDULER_POLL_MS, 1000, 'SCHEDULER_POLL_MS'),
         shutdownGraceMs: positiveInteger(env.SHUTDOWN_GRACE_MS, 10000, 'SHUTDOWN_GRACE_MS'),
         webhookConcurrency: positiveInteger(env.WEBHOOK_CONCURRENCY, 2, 'WEBHOOK_CONCURRENCY'),
@@ -109,6 +121,15 @@ function nonEmptyString(value: string | undefined, name: string): string | undef
     if (value === undefined) return undefined;
     if (value.trim().length === 0) throw new Error(`${name} must be non-empty when provided.`);
     return value;
+}
+
+function absolutePath(value: string | undefined, name: string): string | undefined {
+    const resolved = nonEmptyString(value, name);
+    if (resolved === undefined) return undefined;
+    if (!path.isAbsolute(resolved)) {
+        throw new Error(`${name} must be an absolute path.`);
+    }
+    return resolved;
 }
 
 function positiveInteger(value: string | undefined, fallback: number, name: string): number {

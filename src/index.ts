@@ -40,7 +40,8 @@ try {
         config.schedulerPollMs,
         security.secrets,
         { repository: workerRepository, ...(config.workerName === undefined ? {} : { name: config.workerName }), queues: config.workerQueues,
-            heartbeatMs: config.workerHeartbeatMs, leaseMs: config.executionLeaseMs }
+            heartbeatMs: config.workerHeartbeatMs, leaseMs: config.executionLeaseMs,
+            workerEnabled: config.embeddedWorkerEnabled }
     );
     const webhookDispatcher = new WebhookDispatcher(webhookRepository, {
         concurrency: config.webhookConcurrency,

@@ -15,5 +15,53 @@ services:
     volumes:
       - backgroundjobs-postgres:/var/lib/postgresql
 
+  migrate:
+    profiles: ["worker"]
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    image: backgroundjobs-worker:local
+    command: ["node", "/app/dist/db/migrate.js"]
+    working_dir: /app
+    read_only: true
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/backgroundjobs
+
+  isolated-worker:
+    profiles: ["worker"]
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    image: backgroundjobs-worker:local
+    init: true
+    read_only: true
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/backgroundjobs
+      WORKER_NAME: isolated-worker
+      WORKER_WORK_DIRECTORY: /work
+      WORKER_REQUIRE_NON_ADMIN: "true"
+      TMPDIR: /work/tmp
+    volumes:
+      - backgroundjobs-worker:/work
+
 volumes:
   backgroundjobs-postgres:
+  backgroundjobs-worker:

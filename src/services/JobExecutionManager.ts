@@ -13,6 +13,7 @@ export interface WorkerRuntimeOptions {
     heartbeatMs?: number;
     leaseMs?: number;
     schedulerEnabled?: boolean;
+    workerEnabled?: boolean;
 }
 
 export class JobExecutionManager {
@@ -32,6 +33,7 @@ export class JobExecutionManager {
     private readonly heartbeatMs: number;
     private readonly leaseMs: number;
     private readonly schedulerEnabled: boolean;
+    private readonly workerEnabled: boolean;
 
     constructor(
         private readonly executions: ExecutionRepository,
@@ -47,20 +49,23 @@ export class JobExecutionManager {
         this.heartbeatMs = options.heartbeatMs ?? 5_000;
         this.leaseMs = options.leaseMs ?? 20_000;
         this.schedulerEnabled = options.schedulerEnabled ?? true;
+        this.workerEnabled = options.workerEnabled ?? true;
     }
 
     get started(): boolean { return this.servicesStarted; }
-    get capacity(): number { return this.workerConcurrency; }
+    get capacity(): number { return this.workerEnabled ? this.workerConcurrency : 0; }
 
     async start(): Promise<void> {
-        if (this.acceptingWork) return;
+        if (this.servicesStarted) return;
         await this.executions.reconcileExpiredLeases();
-        this.workerId = await this.workers.register(this.workerName, this.queues, this.workerConcurrency);
         this.acceptingWork = true;
         this.servicesStarted = true;
-        await this.heartbeatTick();
+        if (this.workerEnabled) {
+            this.workerId = await this.workers.register(this.workerName, this.queues, this.workerConcurrency);
+            await this.heartbeatTick();
+        }
         if (this.schedulerEnabled) await this.schedulerTick();
-        await this.dispatcherTick();
+        if (this.workerEnabled) await this.dispatcherTick();
     }
 
     async cancel(executionId: string, actor?: AuthenticatedActor): Promise<ExecutionSummary> {

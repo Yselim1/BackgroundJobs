@@ -56,6 +56,9 @@ Configuration:
 | `WORKER_HEARTBEAT_MS` | `5000` | Worker heartbeat and cancellation-check interval |
 | `EXECUTION_LEASE_MS` | `20000` | Duration of a renewable execution ownership lease |
 | `WORKER_STALE_MS` | `30000` | Time after which a missing worker is shown offline |
+| `EMBEDDED_WORKER_ENABLED` | development: `true`; production: `false` | Let the API process also claim and execute jobs |
+| `WORKER_WORK_DIRECTORY` | unset | Dedicated root and default `CWD` for a standalone worker |
+| `WORKER_REQUIRE_NON_ADMIN` | `false` | Refuse to start a standalone worker as root or a Windows Administrators-group member |
 | `SCHEDULER_POLL_MS` | `1000` | Scheduler and dispatcher poll interval |
 | `SHUTDOWN_GRACE_MS` | `10000` | Grace before running work is interrupted |
 | `AUTH_SESSION_TTL_MS` | `43200000` | Absolute server-side session lifetime |
@@ -206,6 +209,20 @@ Manual and event-triggered requests may backlog while a job is running; only one
 
 `npm run dev` retains the all-in-one API, scheduler, dispatcher, and worker. Run `npm run dev:worker` in another terminal to add a PostgreSQL-coordinated worker. Worker heartbeats renew execution leases and observe remote cancellation; an expired lease fails once with `WORKER_LOST` rather than automatically repeating potentially non-idempotent side effects.
 
+### Run jobs in an isolated, non-administrator worker
+
+The hardened worker profile separates job execution from the API process. Production disables the embedded worker by default; for local development, put `EMBEDDED_WORKER_ENABLED=false` in the ignored root `.env` and restart the backend. Then start the isolated worker:
+
+```powershell
+npm run worker:isolated
+```
+
+The profile applies migrations and runs `dist/worker.js` as the dedicated Linux user and group `10001:10001`. Its image filesystem is read-only, all Linux capabilities are dropped, privilege escalation is disabled, and the `backgroundjobs-worker` volume mounted at `/work` is its only writable persistent location. `WORKER_WORK_DIRECTORY=/work` makes that directory the default COMMAND `CWD` and rejects an authored `CWD` that escapes it. Python temporary scripts also use `/work/tmp`. The worker can still read its runtime and application files and can reach PostgreSQL and authored network destinations; the boundary reduces host-file impact but does not make hostile job code safe.
+
+The profile reads `SECRETS_MASTER_KEY` and other worker settings from the ignored `.env` when present, while overriding the database hostname for Compose. Stop it with `npm run worker:isolated:stop`. Re-enable `EMBEDDED_WORKER_ENABLED=true` before returning to the all-in-one development process.
+
+For a native worker instead of Docker, create a standard OS account yourself, grant that account access only to a dedicated directory, and launch `npm run start:worker` from that account with absolute `WORKER_WORK_DIRECTORY` and `WORKER_REQUIRE_NON_ADMIN=true` values. The startup guard refuses root and Windows Administrators-group members, but the operating-system ACL—not Node.js—must enforce which other files the account can read or write.
+
 ## Inbound events and job chaining
 
 Administrators configure webhook and job-completion triggers from a job's Automations tab. Webhook creation or rotation returns a `bj_hook_...` bearer token exactly once; only its SHA-256 hash is stored. Invoke it with `POST /hooks/:triggerId`, a JSON-object body, and `Authorization: Bearer ...`. An optional `Idempotency-Key` returns the original queued execution for repeated delivery.
@@ -354,11 +371,15 @@ Only referenced secrets are decrypted for an execution. Resolved values are reda
 
 This project is designed for trusted job authors and local or otherwise trusted environments. Authentication and role checks protect job-definition writes, but a permitted author can still define privileged work.
 
-- Static shell commands, Python, synchronous SCRIPT code, and executor plugins run with the worker process's operating-system permissions.
-- Managed secrets should be referenced by name. Literal credentials embedded in job definitions cannot be reliably identified or redacted.
-- Localhost and private-network HTTP targets are allowed when their origins are statically authored.
-- Rate limiting, private-network egress blocking, and container or VM isolation are intentionally deferred while the application remains local and is not internet-facing.
-- Do not allow untrusted users to create or modify job definitions. Run workers under a non-administrator operating-system account and review definitions before activation.
+- Static shell commands, Python, synchronous SCRIPT code, and executor plugins retain the worker account's filesystem, process, and network permissions. The isolated worker above limits writable files but is not a hostile-code sandbox.
+- A step receives every managed secret referenced anywhere in its job definition. A trusted author can therefore copy one step's referenced secret from `context.secrets`; per-step secret grants are not implemented.
+- Managed secrets should be referenced by name. Literal credentials embedded in job definitions, runtime input, or command arguments cannot be reliably identified or redacted from every external process or destination.
+- Localhost and private-network HTTP targets remain allowed when their origins are statically authored, so a trusted author can intentionally contact internal services reachable from the worker.
+- API tokens inherit the complete role of their owner and do not yet support narrower per-token scopes.
+- Application-level request rate limiting is not implemented. Authentication lockouts constrain password guessing, but an internet-facing deployment still needs a trusted reverse proxy or gateway for general abuse controls.
+- Hostile-author container or VM isolation and private-network egress blocking remain deferred while the application is local and not internet-facing. Do not allow untrusted users to create or modify definitions, plugins, or worker images.
+
+Use the isolated worker profile or an equivalently restricted native service account, keep managed secrets out of literal job fields, and review definitions before activation. These controls reduce the effect of mistakes; they do not remove the trusted-author assumption.
 
 Production startup fails unless secure cookies and an explicit `CORS_ALLOWED_ORIGINS` list are configured. Terminate TLS at the application or a trusted reverse proxy, set `TRUST_PROXY=true` only for that topology, and keep the dashboard and API on the same origin where possible.
 

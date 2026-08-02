@@ -1,6 +1,8 @@
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { JobRunner } from '../../src/core/JobRunner.js';
 import { CommandExecutor } from '../../src/executors/CommandExecutor.js';
+import { resolveWorkerCwd } from '../../src/executors/executorSafety.js';
 import { RestApiExecutor } from '../../src/executors/RestApiExecutor.js';
 import type { Job, Step } from '../../src/types/index.js';
 import { fetchSameOrigin, readResponsePrefix, readResponseText } from '../../src/utils/outboundHttp.js';
@@ -56,6 +58,20 @@ describe('safe command execution', () => {
         if (!invalid.valid) expect(invalid.errors.map(issue => issue.code)).toEqual(expect.arrayContaining([
             'DYNAMIC_SHELL_COMMAND', 'DYNAMIC_EXECUTABLE', 'DYNAMIC_WORKING_DIRECTORY', 'UNSAFE_ENV_TEMPLATE'
         ]));
+    });
+
+    it('keeps command working directories inside the configured worker directory', () => {
+        const previous = process.env.WORKER_WORK_DIRECTORY;
+        const root = path.resolve('worker-test-root');
+        process.env.WORKER_WORK_DIRECTORY = root;
+        try {
+            expect(resolveWorkerCwd(undefined)).toBe(root);
+            expect(resolveWorkerCwd('nested')).toBe(path.join(root, 'nested'));
+            expect(() => resolveWorkerCwd('..')).toThrow(/must stay within WORKER_WORK_DIRECTORY/u);
+            expect(() => resolveWorkerCwd(path.join(root, '..', 'outside'))).toThrow(/must stay within WORKER_WORK_DIRECTORY/u);
+        } finally {
+            restoreEnvironment('WORKER_WORK_DIRECTORY', previous);
+        }
     });
 });
 
