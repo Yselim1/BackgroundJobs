@@ -162,10 +162,10 @@
       {
         "ORDER": 3,
         "ID": "550e8400-e29b-41d4-a716-446655440103",
-        "NAME": "Invalid URL format test",
+        "NAME": "Connection refused test",
         "TYPE": "RESTAPI",
         "STEP_PARAMS": {
-          "URL": "not-a-valid-url",
+          "URL": "http://127.0.0.1:1/unreachable",
           "METHOD": "GET",
           "TIMEOUT_MS": 5000
         }
@@ -209,7 +209,8 @@
         "NAME": "Echo Command",
         "TYPE": "COMMAND",
         "STEP_PARAMS": {
-          "COMMAND": "echo 'Hello, World!'"
+          "EXECUTABLE": "node",
+          "ARGS": ["-e", "console.log('Hello, World!')"]
         }
       },
       {
@@ -218,7 +219,8 @@
         "NAME": "Failing Command",
         "TYPE": "COMMAND",
         "STEP_PARAMS": {
-          "COMMAND": "node -e \"process.exit(1)\""
+          "EXECUTABLE": "node",
+          "ARGS": ["-e", "process.exit(1)"]
         }
       }
     ],

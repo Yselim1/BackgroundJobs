@@ -2,6 +2,10 @@
 
 A Node.js 24+ and TypeScript background-job service with PostgreSQL-backed definitions, durable execution history and progress events, six-field cron scheduling, a transactional work queue, bounded concurrency, retries, cancellation, job deadlines, runtime input, and reliable terminal webhooks.
 
+[![Workline operations overview](docs/images/dashboard/overview-metrics.png)](docs/images/dashboard/overview.png)
+
+The backend is paired with the independent **Workline** operations dashboard. See the [visual dashboard tour](dashboard/README.md) for illustrated workflows covering job authoring, automations, execution investigation, attention triage, workers, queues, and notification routing.
+
 The Run/Investigation, Operations Shell, Workflow Authoring, Queue/Backfill, and Incident/Notification expansion is documented in [docs/product-expansion.md](docs/product-expansion.md), including API additions, rollout checks, and rollback guidance.
 
 PostgreSQL is the source of truth. No job or execution exists only in process memory, and the reference file in `examples/jobs.json` is never imported at runtime.
@@ -121,6 +125,23 @@ The importer converts five-field cron schedules to six fields, defaults missing 
 Schedules must contain exactly six fields, including seconds. `timezone` is an IANA identifier and defaults to `UTC`. Inactive jobs are not scheduled but can be run manually. `last_run` and `next_run` are server-managed response fields and are rejected in create/replace bodies.
 
 Supported step types are `RESTAPI`, `SCRIPT`, `COMMAND`, and `PYTHON`. Step dependencies, retry settings, job step concurrency, `fail_fast`, and `continue_independent` are preserved. Persisted outputs must be JSON-serializable; top-level `undefined` is stored as SQL null, while circular values, `BigInt`, functions, symbols, and non-finite numbers fail with `OUTPUT_NOT_SERIALIZABLE`.
+
+Dynamic commands use an executable and argument array so resolved input never becomes shell syntax:
+
+```json
+{
+  "TYPE": "COMMAND",
+  "STEP_PARAMS": {
+    "EXECUTABLE": "node",
+    "ARGS": ["-e", "console.log(process.argv[1])", "{{input.message}}"],
+    "TIMEOUT_MS": 10000
+  }
+}
+```
+
+Legacy `COMMAND` strings remain supported when completely static. They cannot contain context templates. `EXECUTABLE` and `CWD` are also literal; individual `ARGS` may resolve scalar context values. COMMAND and PYTHON receive only a minimal operating-system environment plus explicitly declared `ENV` values. Environment templates must be exact managed-secret references such as `{{secrets.API_TOKEN}}`.
+
+REST URLs must have a literal `http` or `https` origin; templates may appear only after the origin. Redirects are limited to five hops on that same origin. Response bodies default to 5 MiB and can set `MAX_RESPONSE_BYTES` between 1 KiB and 10 MiB. SCRIPT functions are synchronous; Promise-returning functions fail explicitly.
 
 ## HTTP API
 
@@ -329,6 +350,16 @@ Job definitions reference names rather than values:
 
 Only referenced secrets are decrypted for an execution. Resolved values are redacted from persisted outputs, errors, and REST URL logs. Command and Python steps should consume secrets through `ENV` templates rather than command-line arguments.
 
+### Current security limitations
+
+This project is designed for trusted job authors and local or otherwise trusted environments. Authentication and role checks protect job-definition writes, but a permitted author can still define privileged work.
+
+- Static shell commands, Python, synchronous SCRIPT code, and executor plugins run with the worker process's operating-system permissions.
+- Managed secrets should be referenced by name. Literal credentials embedded in job definitions cannot be reliably identified or redacted.
+- Localhost and private-network HTTP targets are allowed when their origins are statically authored.
+- Rate limiting, private-network egress blocking, and container or VM isolation are intentionally deferred while the application remains local and is not internet-facing.
+- Do not allow untrusted users to create or modify job definitions. Run workers under a non-administrator operating-system account and review definitions before activation.
+
 Production startup fails unless secure cookies and an explicit `CORS_ALLOWED_ORIGINS` list are configured. Terminate TLS at the application or a trusted reverse proxy, set `TRUST_PROXY=true` only for that topology, and keep the dashboard and API on the same origin where possible.
 
 ## History retention
@@ -409,7 +440,9 @@ Plugin types are normalized to uppercase and cannot replace an existing registra
 
 ## Independent dashboard
 
-The operational dashboard is an independent React/Vite project in `dashboard/`. It has its own dependencies, build, tests, and dev server so frontend development and deployment are not coupled to the backend runtime.
+The Workline dashboard is an independent React/Vite project in `dashboard/`. It has its own dependencies, build, tests, and dev server so frontend development and deployment are not coupled to the backend runtime.
+
+[![Workline job dependency plan](docs/images/dashboard/workflow-plan.png)](docs/images/dashboard/workflow.png)
 
 ~~~bash
 # Terminal 1: backend
@@ -423,8 +456,4 @@ npm run dev
 
 For production, run `npm run build` inside `dashboard/` and serve its `dist/` output behind the same origin/reverse proxy as the API. `VITE_API_BASE_URL` can point at an origin explicitly listed in `CORS_ALLOWED_ORIGINS`.
 
-The dashboard provides login/logout, permission-aware run/cancel controls, a dedicated `/admin` workspace, immutable audit review, a shared `/attention` triage queue, and `/workers` fleet visibility. Job details include URL-addressable Overview, Versions, and Automations tabs with revision diffs, safe rollback, one-time webhook credentials, chain configuration, and durable trigger history. Its Jobs workspace retains filters, sorting, bulk status changes, definition duplication/export, schedule previews, queue/priority controls, secret suggestions, and dependency previews.
-
-## Adding Kafka or RabbitMQ later
-
-Keep PostgreSQL authoritative and publish from the transactional event/outbox records introduced in this milestone. RabbitMQ can wake work-queue consumers; Kafka can carry lifecycle events for audit, analytics, notifications, and downstream systems. A consumer should receive only an execution ID, claim/verify it in PostgreSQL, and be idempotent under at-least-once delivery. Cancellation messages are hints—the persisted `cancel_requested_at` value remains decisive.
+The dashboard provides login/logout, permission-aware run/cancel controls, a dedicated `/admin` workspace, immutable audit review, a shared `/attention` triage queue, and `/workers` fleet visibility. Job details include URL-addressable Overview, Versions, and Automations tabs with revision diffs, safe rollback, one-time webhook credentials, chain configuration, and durable trigger history. Its Jobs workspace retains filters, sorting, bulk status changes, definition duplication/export, schedule previews, queue/priority controls, secret suggestions, and dependency previews. The [dashboard README](dashboard/README.md) explains each workspace with current screenshots and an operator-focused route map.

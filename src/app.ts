@@ -64,7 +64,8 @@ export function createApp(dependencies: AppDependencies): express.Express {
             }
             res.status(200).json({ status: 'ready' });
         } catch (error: unknown) {
-            res.status(503).json({ status: 'not_ready', error: error instanceof Error ? error.message : String(error) });
+            console.error('[READINESS] Readiness check failed:', error);
+            res.status(503).json({ status: 'not_ready', error: 'One or more required services are unavailable.' });
         }
     });
     if (dependencies.automations !== undefined) app.use('/hooks', createWebhookIngressController(dependencies.automations));

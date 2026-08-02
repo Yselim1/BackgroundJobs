@@ -11,7 +11,8 @@ const BUILTIN_PLUGINS: StepExecutorPlugin[] = [
         parameterSchema: { type: 'object', required: ['URL'], properties: {
             URL: { type: 'string' }, METHOD: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] },
             HEADERS: { type: 'object', additionalProperties: { type: 'string' } }, QUERY: { type: 'object' }, BODY: {},
-            TIMEOUT_MS: { type: 'integer', minimum: 1 }, RESPONSE_TYPE: { type: 'string', enum: ['auto', 'json', 'text'] }
+            TIMEOUT_MS: { type: 'integer', minimum: 1 }, MAX_RESPONSE_BYTES: { type: 'integer', minimum: 1024, maximum: 10485760 },
+            RESPONSE_TYPE: { type: 'string', enum: ['auto', 'json', 'text'] }
         }, additionalProperties: true },
         outputSchema: { type: 'object', properties: { status: { type: 'integer' }, statusText: { type: 'string' }, headers: { type: 'object' }, data: {} } }
     } },
@@ -21,7 +22,10 @@ const BUILTIN_PLUGINS: StepExecutorPlugin[] = [
     } },
     { type: 'COMMAND', executor: new CommandExecutor(), presentation: {
         displayName: 'Command', description: 'Run a local command on the worker.',
-        parameterSchema: { type: 'object', required: ['COMMAND'], properties: { COMMAND: { type: 'string' }, CWD: { type: 'string' }, ENV: { type: 'object' }, TIMEOUT_MS: { type: 'integer', minimum: 1 } }, additionalProperties: true }
+        parameterSchema: { type: 'object', properties: {
+            COMMAND: { type: 'string' }, EXECUTABLE: { type: 'string' }, ARGS: { type: 'array', items: { type: ['string', 'number', 'boolean', 'null'] } },
+            CWD: { type: 'string' }, ENV: { type: 'object', additionalProperties: { type: 'string' } }, TIMEOUT_MS: { type: 'integer', minimum: 1 }
+        }, oneOf: [{ required: ['COMMAND'] }, { required: ['EXECUTABLE'] }], additionalProperties: true }
     } },
     { type: 'PYTHON', executor: new PythonExecutor(), presentation: {
         displayName: 'Python', description: 'Run a Python snippet on the worker.',

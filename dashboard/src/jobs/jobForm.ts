@@ -263,7 +263,7 @@ function defaultParams(type: string): Record<string, unknown> {
         case 'RESTAPI':
             return { URL: 'https://example.com', METHOD: 'GET', TIMEOUT_MS: 10000 };
         case 'COMMAND':
-            return { COMMAND: 'echo hello', TIMEOUT_MS: 10000 };
+            return { EXECUTABLE: 'node', ARGS: ['-e', "console.log('hello')"], TIMEOUT_MS: 10000 };
         case 'PYTHON':
             return { CODE: 'import json\nprint(json.dumps({"ok": True}))', TIMEOUT_MS: 10000 };
         default:

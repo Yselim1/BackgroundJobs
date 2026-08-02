@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import type { ClaimedNotificationDelivery, NotificationRepository } from '../repositories/NotificationRepository.js';
 import type { SecretService } from './SecretService.js';
+import { fetchSameOrigin } from '../utils/outboundHttp.js';
 
 export class NotificationDispatcher {
     private accepting = false;
@@ -45,10 +46,14 @@ export class NotificationDispatcher {
                 headers['X-Workline-Timestamp'] = timestamp;
                 headers['X-Workline-Signature'] = `sha256=${createHmac('sha256', key).update(`${timestamp}.${body}`).digest('hex')}`;
             }
-            const response = await (this.options.fetchImplementation ?? fetch)(url, { method: 'POST', headers, body,
-                signal: AbortSignal.timeout(this.options.requestTimeoutMs ?? 10_000) });
+            const response = await fetchSameOrigin(url, { method: 'POST', headers, body,
+                signal: AbortSignal.timeout(this.options.requestTimeoutMs ?? 10_000) }, this.options.fetchImplementation ?? fetch);
             responseStatus = response.status;
-            if (!response.ok) throw new Error(`Notification endpoint returned HTTP ${response.status}.`);
+            if (!response.ok) {
+                await response.body?.cancel().catch(() => undefined);
+                throw new Error(`Notification endpoint returned HTTP ${response.status}.`);
+            }
+            await response.body?.cancel().catch(() => undefined);
             await this.repository.complete(delivery.deliveryId, response.status);
         } catch (error: unknown) {
             await this.repository.fail(delivery.deliveryId, this.options.maxAttempts ?? 5,

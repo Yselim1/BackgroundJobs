@@ -4,8 +4,12 @@ import { resolveContextTemplates} from '../utils/contextResolver.js';
 import type { ExecutorOptions } from './IStepExecutor.js';
 import { abortError } from '../errors.js';
 import { redactManagedSecretText } from '../security/redaction.js';
+import { fetchSameOrigin, httpUrl, readResponseText } from '../utils/outboundHttp.js';
 
 const DEFAULT_TIMEOUT_MS = 10000;
+const DEFAULT_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+const MIN_RESPONSE_BYTES = 1024;
+const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 
 const SUPPORTED_HTTP_METHODS = new Set<HttpMethod>([
     'GET',
@@ -29,6 +33,7 @@ export class RestApiExecutor implements IStepExecutor {
 
             const method = resolveMethod(params.METHOD);
             timeoutMs = resolveTimeout(params.TIMEOUT_MS);
+            const maxResponseBytes = resolveMaxResponseBytes(params.MAX_RESPONSE_BYTES);
             const responseType = resolveResponseType(params.RESPONSE_TYPE);
             const capturedResponseHeaderNames = resolveCapturedResponseHeaderNames(params.CAPTURE_RESPONSE_HEADERS);
             /**
@@ -68,6 +73,10 @@ export class RestApiExecutor implements IStepExecutor {
                   resolvedUrl,
                   resolvedQuery
             );
+            const definitionOrigin = httpUrl(params.URL).origin;
+            if (httpUrl(requestUrl).origin !== definitionOrigin) {
+                throw new Error(`REST URL origin must remain ${definitionOrigin}.`);
+            }
 
             const headers = buildHeaders(resolvedHeaders);
 
@@ -92,9 +101,9 @@ export class RestApiExecutor implements IStepExecutor {
                   requestInit.body = body;
             }
             
-            const response = await fetch(requestUrl, requestInit);
+            const response = await fetchSameOrigin(requestUrl, requestInit, fetch, definitionOrigin);
 
-            const data = await parseResponseBody(response, method, responseType);
+            const data = await parseResponseBody(response, method, responseType, maxResponseBytes);
         
             if (!response.ok) {
                 throw new Error(buildHttpErrorMessage(response, data));
@@ -154,6 +163,14 @@ function resolveTimeout(timeoutValue: unknown): number {
         );
     }
     return timeoutValue;
+}
+
+function resolveMaxResponseBytes(value: unknown): number {
+    if (value === undefined) return DEFAULT_MAX_RESPONSE_BYTES;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < MIN_RESPONSE_BYTES || value > MAX_RESPONSE_BYTES) {
+        throw new Error(`MAX_RESPONSE_BYTES must be an integer between ${MIN_RESPONSE_BYTES} and ${MAX_RESPONSE_BYTES}.`);
+    }
+    return value;
 }
 
 function buildRequestUrl(urlValue: unknown, queryValue: unknown):string {
@@ -261,11 +278,16 @@ function resolveResponseType(responseTypeValue: unknown): RestApiResponseType {
     return responseType;
 }
 
-async function parseResponseBody(response: Response, method: HttpMethod, responseType: RestApiResponseType): Promise<unknown> {
+async function parseResponseBody(
+    response: Response,
+    method: HttpMethod,
+    responseType: RestApiResponseType,
+    maxResponseBytes: number
+): Promise<unknown> {
     // HEAD responses and these status codes will not have a meaningful response body.
     if (method === 'HEAD' || response.status === 204 || response.status === 205 || response.status === 304) return null;
     
-    const responseText = await response.text();
+    const responseText = await readResponseText(response, maxResponseBytes);
     if (responseText.length === 0) return null;
     
     if (responseType === 'text') return responseText;

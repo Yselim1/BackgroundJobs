@@ -16,7 +16,11 @@ export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 
 export type RestApiResponseType = 'auto' | 'json' | 'text';
 export type RestApiQueryPrimitive = string | number | boolean | null;
 export type RestApiQueryValue = RestApiQueryPrimitive | RestApiQueryPrimitive[];
-export interface RestApiStepParams extends StepParams { URL: string; METHOD?: HttpMethod; HEADERS?: Record<string, string>; QUERY?: Record<string, RestApiQueryValue>; BODY?: unknown; TIMEOUT_MS?: number; RESPONSE_TYPE?: RestApiResponseType; CAPTURE_RESPONSE_HEADERS?: string[]; }
+export interface RestApiStepParams extends StepParams { URL: string; METHOD?: HttpMethod; HEADERS?: Record<string, string>; QUERY?: Record<string, RestApiQueryValue>; BODY?: unknown; TIMEOUT_MS?: number; MAX_RESPONSE_BYTES?: number; RESPONSE_TYPE?: RestApiResponseType; CAPTURE_RESPONSE_HEADERS?: string[]; }
+export type CommandArgument = string | number | boolean | null;
+export type CommandStepParams =
+    | { COMMAND: string; EXECUTABLE?: never; ARGS?: never; CWD?: string; ENV?: Record<string, string>; TIMEOUT_MS?: number }
+    | { COMMAND?: never; EXECUTABLE: string; ARGS?: CommandArgument[]; CWD?: string; ENV?: Record<string, string>; TIMEOUT_MS?: number };
 export interface RestApiStepOutput { status: number; statusText: string; headers?: Record<string, string>; data: unknown; }
 export interface Step { ORDER: number; ID: string; NAME: string; TYPE: string; DEPENDS_ON?: string[]; WHEN?: WorkflowCondition; FOREACH?: FanOutDefinition; RETRY?: RetryPolicy; FAIL_JOB_ON_FAILURE?: boolean; REPLAY_SAFE?: boolean; STEP_PARAMS?: StepParams; }
 export type StepStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped' | 'cancelled' | 'reused';

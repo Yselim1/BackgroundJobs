@@ -18,10 +18,19 @@ export class ScriptExecutor implements IStepExecutor {
             const script = new vm.Script(`const userFunction = ${code}; result = userFunction(context);`);
             script.runInContext(sandbox, { timeout: timeoutMs });
             throwIfAborted(options.signal);
+            if (isThenable(sandbox.result)) {
+                throw new Error('Asynchronous SCRIPT functions are unsupported. Use RESTAPI, COMMAND, or PYTHON for asynchronous work.');
+            }
             return sandbox.result;
         } catch (error: unknown) {
             if (options.signal.aborted) throw options.signal.reason;
             throw new Error(`Script Sandbox Error: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+    return (typeof value === 'object' && value !== null) || typeof value === 'function'
+        ? typeof (value as { then?: unknown }).then === 'function'
+        : false;
 }

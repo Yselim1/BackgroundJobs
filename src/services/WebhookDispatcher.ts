@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import type { ClaimedWebhookDelivery, WebhookRepository } from '../repositories/WebhookRepository.js';
 import type { SecretService } from './SecretService.js';
+import { fetchSameOrigin, readResponsePrefix } from '../utils/outboundHttp.js';
 
 export interface WebhookDispatcherOptions {
     concurrency?: number;
@@ -103,17 +104,19 @@ export class WebhookDispatcher {
             if (signingKey !== undefined) {
                 headers['X-Backgroundjobs-Signature'] = createWebhookSignature(signingKey, timestamp, body);
             }
-            const response = await this.fetchImplementation(delivery.url, {
+            const response = await fetchSameOrigin(delivery.url, {
                 method: 'POST',
                 headers,
                 body,
                 signal: AbortSignal.timeout(this.requestTimeoutMs)
-            });
+            }, this.fetchImplementation);
             responseStatus = response.status;
             if (!response.ok) {
-                const responseBody = (await response.text()).slice(0, 500);
-                throw new Error(`Webhook returned HTTP ${response.status}${responseBody.length === 0 ? '' : `: ${responseBody}`}`);
+                const diagnostic = await readResponsePrefix(response, 4 * 1024);
+                const suffix = diagnostic.truncated ? '…' : '';
+                throw new Error(`Webhook returned HTTP ${response.status}${diagnostic.text.length === 0 ? '' : `: ${diagnostic.text}${suffix}`}`);
             }
+            await response.body?.cancel().catch(() => undefined);
             await this.deliveries.complete(delivery.deliveryId, response.status);
         } catch (error: unknown) {
             const message = (error instanceof Error ? error.message : String(error)).slice(0, 2_000);

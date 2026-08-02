@@ -42,7 +42,11 @@ const VALUE_CONDITION_OPERATORS = new Set<WorkflowConditionOperator>([
 const RESERVED_CONTEXT_ROOTS = new Set(['input', 'secrets', 'item', 'index']);
 const SECRET_NAME = /^[A-Z][A-Z0-9_]{1,63}$/u;
 const SECRET_TEMPLATE = /\{\{\s*secrets\.([^{}\s]+)\s*\}\}/gu;
+const CONTEXT_TEMPLATE = /\{\{[^{}]+\}\}/u;
+const EXACT_SECRET_TEMPLATE = /^\{\{\s*secrets\.[A-Z][A-Z0-9_]{1,63}\s*\}\}$/u;
 const QUEUE_NAME = /^[a-z][a-z0-9_-]{0,63}$/u;
+const MIN_RESPONSE_BYTES = 1024;
+const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 
 export class JobValidationError extends Error {
     readonly issues: ValidationIssue[];
@@ -689,6 +693,9 @@ function validateStepParameters(step: Record<string, unknown>, stepPath: string,
 
 function validateRestApiParameters(params: Record<string, unknown>, path: string, errors: ValidationIssue[]): void {
     validateRequiredString(params.URL, `${path}.URL`, 'REST_URL_REQUIRED', errors);
+    if (typeof params.URL === 'string' && params.URL.trim().length > 0) {
+        validateRestOrigin(params.URL, `${path}.URL`, errors);
+    }
 
     let method = 'GET';
 
@@ -707,6 +714,14 @@ function validateRestApiParameters(params: Record<string, unknown>, path: string
         addIssue(errors, `${path}.TIMEOUT_MS`, 'INVALID_TIMEOUT', 'TIMEOUT_MS must be a positive integer.');
     }
 
+    if (params.MAX_RESPONSE_BYTES !== undefined && (
+        typeof params.MAX_RESPONSE_BYTES !== 'number' || !Number.isInteger(params.MAX_RESPONSE_BYTES) ||
+        params.MAX_RESPONSE_BYTES < MIN_RESPONSE_BYTES || params.MAX_RESPONSE_BYTES > MAX_RESPONSE_BYTES
+    )) {
+        addIssue(errors, `${path}.MAX_RESPONSE_BYTES`, 'INVALID_RESPONSE_LIMIT',
+            `MAX_RESPONSE_BYTES must be an integer between ${MIN_RESPONSE_BYTES} and ${MAX_RESPONSE_BYTES}.`);
+    }
+
     if (params.RESPONSE_TYPE !== undefined && (typeof params.RESPONSE_TYPE !== 'string' || !RESPONSE_TYPES.has(params.RESPONSE_TYPE))) {
         addIssue(errors, `${path}.RESPONSE_TYPE`, 'INVALID_RESPONSE_TYPE', 'RESPONSE_TYPE must be "auto", "json", or "text".');
     }
@@ -721,7 +736,36 @@ function validateRestApiParameters(params: Record<string, unknown>, path: string
 }
 
 function validateCommandParameters(params: Record<string, unknown>, path: string, errors: ValidationIssue[]): void {
-    validateRequiredString(params.COMMAND, `${path}.COMMAND`, 'COMMAND_REQUIRED', errors);
+    const hasCommand = params.COMMAND !== undefined;
+    const hasExecutable = params.EXECUTABLE !== undefined;
+    if (hasCommand === hasExecutable) {
+        addIssue(errors, path, 'COMMAND_MODE_REQUIRED', 'Exactly one of COMMAND or EXECUTABLE is required.');
+    }
+    if (hasCommand) {
+        validateRequiredString(params.COMMAND, `${path}.COMMAND`, 'COMMAND_REQUIRED', errors);
+        if (typeof params.COMMAND === 'string' && CONTEXT_TEMPLATE.test(params.COMMAND)) {
+            addIssue(errors, `${path}.COMMAND`, 'DYNAMIC_SHELL_COMMAND',
+                'Legacy COMMAND strings must be static. Use EXECUTABLE and ARGS for dynamic values.');
+        }
+    }
+    if (hasExecutable) {
+        validateRequiredString(params.EXECUTABLE, `${path}.EXECUTABLE`, 'EXECUTABLE_REQUIRED', errors);
+        if (typeof params.EXECUTABLE === 'string' && CONTEXT_TEMPLATE.test(params.EXECUTABLE)) {
+            addIssue(errors, `${path}.EXECUTABLE`, 'DYNAMIC_EXECUTABLE', 'EXECUTABLE must be literal.');
+        }
+    }
+
+    if (params.ARGS !== undefined) {
+        if (!Array.isArray(params.ARGS)) {
+            addIssue(errors, `${path}.ARGS`, 'INVALID_COMMAND_ARGS', 'ARGS must be an array of scalar values.');
+        } else {
+            params.ARGS.forEach((value, index) => {
+                if (value !== null && typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+                    addIssue(errors, `${path}.ARGS[${index}]`, 'INVALID_COMMAND_ARG', 'Command arguments must be scalar values.');
+                }
+            });
+        }
+    }
 
     if (params.TIMEOUT_MS !== undefined && (typeof params.TIMEOUT_MS !== 'number' || !Number.isInteger(params.TIMEOUT_MS) || params.TIMEOUT_MS < 1)) {
         addIssue(errors, `${path}.TIMEOUT_MS`, 'INVALID_TIMEOUT', 'TIMEOUT_MS must be a positive integer.');
@@ -729,19 +773,10 @@ function validateCommandParameters(params: Record<string, unknown>, path: string
 
     if (params.CWD !== undefined && (typeof params.CWD !== 'string' || params.CWD.trim().length === 0)) {
         addIssue(errors, `${path}.CWD`, 'INVALID_WORKING_DIRECTORY', 'CWD must be a non-empty string.');
+    } else if (typeof params.CWD === 'string' && CONTEXT_TEMPLATE.test(params.CWD)) {
+        addIssue(errors, `${path}.CWD`, 'DYNAMIC_WORKING_DIRECTORY', 'CWD must be literal.');
     }
-
-    if (params.ENV !== undefined) {
-        if (!isRecord(params.ENV)) {
-            addIssue(errors, `${path}.ENV`, 'INVALID_ENV', 'ENV must be an object.');
-        } else {
-            for (const [name, value] of Object.entries(params.ENV)) {
-                if (typeof value !== 'string') {
-                    addIssue(errors, `${path}.ENV.${name}`, 'INVALID_ENV_VALUE', 'Environment variable values must be strings.');
-                }
-            }
-        }
-    }
+    validateEnvironment(params.ENV, `${path}.ENV`, errors);
 }
 
 function validateCodeParameters(params: Record<string, unknown>, path: string, errors: ValidationIssue[]): void {
@@ -762,7 +797,35 @@ function validateEnvironment(value: unknown, path: string, errors: ValidationIss
     for (const [name, item] of Object.entries(value)) {
         if (typeof item !== 'string') {
             addIssue(errors, path + '.' + name, 'INVALID_ENV_VALUE', 'Environment variable values must be strings.');
+        } else if (CONTEXT_TEMPLATE.test(item) && !EXACT_SECRET_TEMPLATE.test(item)) {
+            addIssue(errors, path + '.' + name, 'UNSAFE_ENV_TEMPLATE',
+                'Environment values may only use an exact managed-secret template.');
         }
+    }
+}
+
+function validateRestOrigin(value: string, path: string, errors: ValidationIssue[]): void {
+    const trimmed = value.trim();
+    const schemeEnd = trimmed.indexOf('://');
+    if (schemeEnd <= 0) {
+        addIssue(errors, path, 'INVALID_REST_URL', 'REST URL must be an absolute http or https URL.');
+        return;
+    }
+    const authorityStart = schemeEnd + 3;
+    const suffix = trimmed.slice(authorityStart);
+    const delimiter = suffix.search(/[/?#]/u);
+    const authority = delimiter < 0 ? suffix : suffix.slice(0, delimiter);
+    if (CONTEXT_TEMPLATE.test(trimmed.slice(0, authorityStart)) || CONTEXT_TEMPLATE.test(authority)) {
+        addIssue(errors, path, 'DYNAMIC_REST_ORIGIN', 'REST URL scheme, hostname, and port must be literal.');
+        return;
+    }
+    try {
+        const parsed = new URL(trimmed);
+        if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || parsed.hostname.length === 0) {
+            addIssue(errors, path, 'INVALID_REST_URL', 'REST URL must use http or https and include a hostname.');
+        }
+    } catch {
+        addIssue(errors, path, 'INVALID_REST_URL', 'REST URL must be a valid absolute URL.');
     }
 }
 

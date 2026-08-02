@@ -3,6 +3,8 @@ import { abortError, throwIfAborted } from '../errors.js';
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
 const FORCE_KILL_GRACE_MS = 500;
+const WINDOWS_ENVIRONMENT_KEYS = ['PATH', 'SystemRoot', 'ComSpec', 'PATHEXT', 'TEMP', 'TMP'] as const;
+const POSIX_ENVIRONMENT_KEYS = ['PATH', 'LANG', 'LC_ALL', 'TMPDIR'] as const;
 
 export interface ProcessOptions {
     command: string;
@@ -15,6 +17,19 @@ export interface ProcessOptions {
 }
 
 export interface ProcessResult { stdout: string; stderr: string; exitCode: number; }
+
+export function buildChildEnvironment(explicit: Record<string, string> = {}): NodeJS.ProcessEnv {
+    const result: NodeJS.ProcessEnv = {};
+    const keys = process.platform === 'win32' ? WINDOWS_ENVIRONMENT_KEYS : POSIX_ENVIRONMENT_KEYS;
+    const sourceKeys = Object.keys(process.env);
+    for (const expected of keys) {
+        const actual = process.platform === 'win32'
+            ? sourceKeys.find(key => key.toLowerCase() === expected.toLowerCase())
+            : expected;
+        if (actual !== undefined && process.env[actual] !== undefined) result[actual] = process.env[actual];
+    }
+    return { ...result, ...explicit };
+}
 
 export async function runProcess(options: ProcessOptions): Promise<ProcessResult> {
     throwIfAborted(options.signal);
@@ -57,6 +72,10 @@ export async function runProcess(options: ProcessOptions): Promise<ProcessResult
             };
             const onAbort = (): void => {
                 void terminateProcessTree(child);
+                const reason = options.signal.aborted
+                    ? abortError(options.signal)
+                    : timeoutController.signal.reason;
+                finish(() => reject(reason instanceof Error ? reason : new Error(String(reason))));
             };
 
             child.stdout?.on('data', (chunk: Buffer) => append('stdout', chunk));
@@ -81,9 +100,9 @@ async function terminateProcessTree(child: ChildProcess): Promise<void> {
     const pid = child.pid;
     if (pid === undefined || child.exitCode !== null) return;
     if (process.platform === 'win32') {
-        await runTaskkill(pid, false);
-        const forceTimer = setTimeout(() => void runTaskkill(pid, true), FORCE_KILL_GRACE_MS);
-        child.once('close', () => clearTimeout(forceTimer));
+        // Windows does not expose POSIX process-group signals. taskkill /T /F
+        // is the reliable way to prevent a descendant from surviving its parent.
+        await runTaskkill(pid, true);
         return;
     }
     try { process.kill(-pid, 'SIGTERM'); } catch { return; }
