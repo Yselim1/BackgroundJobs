@@ -14,7 +14,8 @@
     "node": ">=24.7.0"
   },
   "scripts": {
-    "db:start": "docker compose up -d --wait postgres",
+    "docker:ensure": "node scripts/ensure-docker.mjs",
+    "db:start": "npm run docker:ensure && docker compose up -d --wait postgres",
     "dev:setup": "npm run db:start && npm run migrate",
     "dev:server": "node --watch --env-file-if-exists=.env --import tsx src/index.ts",
     "dev:worker": "node --watch --env-file-if-exists=.env --import tsx src/worker.ts",

@@ -13,7 +13,7 @@ npm install
 npm run dev
 ```
 
-`npm run dev` starts the Compose PostgreSQL service, waits until it is healthy, applies any pending migrations, and then starts the backend watcher. Docker must already be running. To start only the backend watcher when PostgreSQL is managed separately, use `npm run dev:server`.
+`npm run dev` starts Docker Desktop when needed, starts the Compose PostgreSQL service, waits until it is healthy, applies any pending migrations, and then starts the backend watcher. Docker Desktop can remain closed after restarting your computer; the development command will launch it and wait for the engine. To start only the backend watcher when PostgreSQL is managed separately, use `npm run dev:server`.
 
 There are no default credentials. On the first installation, prepare the database and create exactly one initial administrator:
 
