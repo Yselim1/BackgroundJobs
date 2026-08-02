@@ -13,6 +13,8 @@ import { AutomationDispatcher } from './services/AutomationDispatcher.js';
 import { JobService } from './services/JobService.js';
 import { WebhookDispatcher } from './services/WebhookDispatcher.js';
 import { createSecurityRuntime } from './security/runtime.js';
+import { NotificationRepository } from './repositories/NotificationRepository.js';
+import { NotificationDispatcher } from './services/NotificationDispatcher.js';
 
 const config = loadConfig();
 const pool = createPool(config.databaseUrl, config.dbPoolMax);
@@ -24,6 +26,12 @@ try {
     const automationRepository = new AutomationRepository(pool, executionRepository);
     const webhookRepository = new WebhookRepository(pool);
     const security = createSecurityRuntime(pool, config);
+    const notificationRepository = new NotificationRepository(pool);
+    const notificationDispatcher = new NotificationDispatcher(notificationRepository, security.secrets, {
+        pollMs: config.webhookPollMs,
+        maxAttempts: config.webhookMaxAttempts,
+        requestTimeoutMs: config.webhookRequestTimeoutMs
+    });
     const workerRepository = new WorkerRepository(pool, config.workerStaleMs);
     const manager = new JobExecutionManager(
         executionRepository,
@@ -48,9 +56,10 @@ try {
     try {
         await webhookDispatcher.start();
         await automationDispatcher.start();
+        await notificationDispatcher.start();
     } catch (error: unknown) {
         await manager.shutdown(0);
-        await automationDispatcher.shutdown();
+        await Promise.all([webhookDispatcher.shutdown(), automationDispatcher.shutdown(), notificationDispatcher.shutdown()]);
         throw error;
     }
     const server = createServer(createApp({
@@ -61,6 +70,8 @@ try {
         webhookDispatcher,
         automations: automationRepository,
         automationDispatcher,
+        notifications: notificationRepository,
+        notificationDispatcher,
         security
     }));
     server.listen(config.port, () => console.log(`Background Job Server is running on http://localhost:${config.port}`));
@@ -73,7 +84,8 @@ try {
         await Promise.all([
             manager.shutdown(config.shutdownGraceMs),
             webhookDispatcher.shutdown(),
-            automationDispatcher.shutdown()
+            automationDispatcher.shutdown(),
+            notificationDispatcher.shutdown()
         ]);
         await pool.end();
     };

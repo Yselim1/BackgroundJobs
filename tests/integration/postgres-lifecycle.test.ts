@@ -14,8 +14,10 @@ import { AutomationRepository } from '../../src/repositories/AutomationRepositor
 import { JobRepository } from '../../src/repositories/JobRepository.js';
 import { WorkerRepository } from '../../src/repositories/WorkerRepository.js';
 import { WebhookRepository } from '../../src/repositories/WebhookRepository.js';
+import { NotificationRepository } from '../../src/repositories/NotificationRepository.js';
 import { JobExecutionManager } from '../../src/services/JobExecutionManager.js';
 import { JobService } from '../../src/services/JobService.js';
+import { NotificationDispatcher } from '../../src/services/NotificationDispatcher.js';
 import { WebhookDispatcher, createWebhookSignature } from '../../src/services/WebhookDispatcher.js';
 import type { Job } from '../../src/types/index.js';
 import { createSecurityRuntime, type SecurityRuntime } from '../../src/security/runtime.js';
@@ -58,7 +60,9 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-    await pool.query('TRUNCATE execution_attempts, execution_steps, executions, worker_instances, jobs CASCADE');
+    await pool.query(`TRUNCATE notification_deliveries, notification_policies, notification_channels,
+        queue_rate_windows, queue_policies, execution_idempotency,
+        execution_attempts, execution_steps, executions, worker_instances, jobs CASCADE`);
 });
 
 afterAll(async () => {
@@ -193,6 +197,56 @@ describe('PostgreSQL repositories and lifecycle', () => {
             expect(indexes.rows.map(item => item.indexname)).toEqual(expect.arrayContaining([
                 'managed_secrets_owner_idx', 'managed_secrets_expiry_idx'
             ]));
+        } finally {
+            await client.query('SET search_path TO public').catch(() => undefined);
+            await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => undefined);
+            client.release();
+        }
+    });
+
+    it('migrates a populated version-009 schema without losing job, execution, or Attention history', async () => {
+        const schema = 'product_expansion_migration_' + randomUUID().replaceAll('-', '');
+        const client = await pool.connect();
+        try {
+            await client.query(`CREATE SCHEMA "${schema}"`);
+            await client.query(`SET search_path TO "${schema}"`);
+            const migrations = await readMigrations();
+            for (const migration of migrations.filter(item => item.version <= 9)) await client.query(migration.sql);
+            const definition = job('migration-009', 'inactive');
+            const executionId = randomUUID();
+            const attentionId = randomUUID();
+            await client.query(
+                `INSERT INTO jobs(id, definition, status, timezone)
+                 VALUES ($1, $2::jsonb, 'inactive', 'UTC')`,
+                [definition.id, JSON.stringify(definition)]
+            );
+            await client.query(
+                `INSERT INTO executions(id, job_id, job_definition, input, trigger_type, status,
+                    requested_at, finished_at, error_code, error_message)
+                 VALUES ($1, $2, $3::jsonb, '{}'::jsonb, 'manual', 'failed',
+                    clock_timestamp() - interval '2 minutes', clock_timestamp() - interval '1 minute',
+                    'MIGRATED_FAILURE', 'Preserved failure')`,
+                [executionId, definition.id, JSON.stringify(definition)]
+            );
+            await client.query(
+                `INSERT INTO operational_attention_items(
+                    id, kind, source_id, execution_id, job_id, reason, detail_snapshot, occurred_at, state
+                 ) VALUES ($1, 'execution_failure', $2, $2, $3, 'Preserved failure',
+                    '{"errorCode":"MIGRATED_FAILURE"}'::jsonb, clock_timestamp() - interval '1 minute', 'ignored')`,
+                [attentionId, executionId, definition.id]
+            );
+            for (const migration of migrations.filter(item => item.version > 9)) await client.query(migration.sql);
+
+            expect((await client.query<{ count: string }>('SELECT count(*)::text AS count FROM jobs')).rows[0]?.count).toBe('1');
+            expect((await client.query<{ count: string }>('SELECT count(*)::text AS count FROM executions')).rows[0]?.count).toBe('1');
+            const attention = await client.query<{ state: string; severity: string; fingerprint: string; occurrence_count: number }>(
+                'SELECT state, severity, fingerprint, occurrence_count FROM operational_attention_items WHERE id = $1',
+                [attentionId]
+            );
+            expect(attention.rows[0]).toMatchObject({ state: 'ignored', severity: 'high', occurrence_count: 1 });
+            expect(attention.rows[0]?.fingerprint).toHaveLength(32);
+            const events = await client.query<{ event_type: string }>('SELECT event_type FROM incident_events WHERE attention_id = $1 ORDER BY id', [attentionId]);
+            expect(events.rows.map(item => item.event_type)).toEqual(['opened', 'state_changed']);
         } finally {
             await client.query('SET search_path TO public').catch(() => undefined);
             await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => undefined);
@@ -1608,6 +1662,162 @@ describe('Security and authentication lifecycle', () => {
         await jobs.setStatuses(['event-target'], 'inactive');
         await request(app).post(hookPath).set('Authorization', 'Bearer ' + webhook.body.token)
             .send({ hello: 'later' }).expect(409).expect(response => expect(response.body.code).toBe('JOB_INACTIVE'));
+    });
+
+    it('validates defaults, deduplicates manual runs, resumes replay-safe steps, and exposes operations APIs', async () => {
+        const definition: Job = {
+            ...job('expanded-api', 'inactive'),
+            INPUT_SCHEMA: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['account', 'count'],
+                properties: {
+                    account: { type: 'string' },
+                    count: { type: 'integer', minimum: 1 }
+                }
+            },
+            DEFAULT_INPUT: { account: 'primary', count: 2 },
+            STEPS: [
+                { ORDER: 1, ID: 'prepare', NAME: 'Prepare', TYPE: 'SCRIPT', STEP_PARAMS: { CODE: '() => ({ prepared: true })' } },
+                { ORDER: 2, ID: 'deliver', NAME: 'Deliver', TYPE: 'SCRIPT', DEPENDS_ON: ['prepare'], REPLAY_SAFE: true, STEP_PARAMS: { CODE: '() => ({ delivered: true })' } }
+            ]
+        };
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000);
+        const app = createApp({ pool, jobs: new JobService(jobs, executions), executions, manager, security });
+        const api = authenticatedRequest(app);
+        await api.post('/api/jobs').send(definition).expect(201);
+        await api.post('/api/jobs/expanded-api/run/validate').send({}).expect(200)
+            .expect(response => expect(response.body.input).toEqual({ account: 'primary', count: 2 }));
+        await api.post('/api/jobs/expanded-api/run/validate').send({ input: { count: 3 } }).expect(422)
+            .expect(response => expect(response.body.code).toBe('EXECUTION_INPUT_SCHEMA_FAILED'));
+
+        const first = await api.post('/api/jobs/expanded-api/run').set('Idempotency-Key', 'manual-once').send({}).expect(202);
+        const duplicate = await api.post('/api/jobs/expanded-api/run').set('Idempotency-Key', 'manual-once').send({}).expect(202);
+        expect(duplicate.body.executionId).toBe(first.body.executionId);
+        await api.post('/api/jobs/expanded-api/run').set('Idempotency-Key', 'manual-once')
+            .send({ input: { account: 'other', count: 1 } }).expect(409)
+            .expect(response => expect(response.body.code).toBe('IDEMPOTENCY_KEY_REUSED'));
+
+        expect((await executions.claimOldestQueued())?.executionId).toBe(first.body.executionId);
+        await executions.stepFinished(first.body.executionId, {
+            stepId: 'prepare', stepName: 'Prepare', stepType: 'SCRIPT', status: 'success', attempts: [], output: { prepared: true }
+        });
+        await executions.stepFinished(first.body.executionId, {
+            stepId: 'deliver', stepName: 'Deliver', stepType: 'SCRIPT', status: 'failed', attempts: [],
+            errorCode: 'DELIVERY_FAILED', error: 'Delivery failed'
+        });
+        await executions.finishExecution(first.body.executionId, 'failed', 'DELIVERY_FAILED', 'Delivery failed');
+        const resumed = await api.post('/api/executions/' + first.body.executionId + '/replay')
+            .send({ resumeStepId: 'deliver' }).expect(202);
+        const resumedDetail = await executions.getDetail(resumed.body.executionId as string);
+        expect(resumedDetail).toMatchObject({
+            trigger: 'replay',
+            replaySourceExecutionId: first.body.executionId,
+            resumeStepId: 'deliver',
+            stepResults: { prepare: { status: 'reused', output: { prepared: true } }, deliver: { status: 'pending' } }
+        });
+
+        const testRun = await api.post('/api/jobs/test-run').send({ job: definition, stepId: 'deliver' }).expect(202);
+        expect(testRun.body).toMatchObject({ trigger: 'test', testSelectedStepId: 'deliver', suppressSideEffects: true });
+        await api.get('/api/platform/executor-catalog').expect(200)
+            .expect(response => expect(response.body.items.some((item: { type: string }) => item.type === 'SCRIPT')).toBe(true));
+        const activity = await api.get('/api/platform/activity?window=6h').expect(200);
+        expect(activity.body).toMatchObject({ window: '6h', startsAt: expect.any(String), generatedAt: expect.any(String) });
+        const populatedBucket = activity.body.buckets.find((bucket: { requested: number }) => bucket.requested > 0) as { at: string; requested: number } | undefined;
+        expect(populatedBucket).toBeDefined();
+        const exactFrom = new Date(Math.max(Date.parse(populatedBucket!.at), Date.parse(activity.body.startsAt))).toISOString();
+        const exactTo = new Date(Math.min(Date.parse(populatedBucket!.at) + activity.body.bucketMs, Date.parse(activity.body.generatedAt))).toISOString();
+        const matchingLogs = await api.get('/api/executions').query({ from: exactFrom, to: exactTo, page: 1, limit: 100 }).expect(200);
+        expect(matchingLogs.body.total).toBe(populatedBucket!.requested);
+        await api.get('/api/platform/search?q=expanded').expect(200)
+            .expect(response => expect(response.body.jobs[0]).toMatchObject({ id: 'expanded-api' }));
+
+        const scheduledDefinition = { ...job('backfill-dedup', 'active'), schedule: '0 * * * * *' };
+        const scheduledJob = await api.post('/api/jobs').send(scheduledDefinition).expect(201);
+        const scheduledFor = new Date(scheduledJob.body.next_run as string);
+        const backfill = await api.post('/api/jobs/backfill-dedup/backfills')
+            .set('Idempotency-Key', 'backfill-once')
+            .send({ from: new Date(scheduledFor.getTime() - 1_000).toISOString(), to: scheduledFor.toISOString() })
+            .expect(202);
+        expect(backfill.body.executions).toHaveLength(1);
+        const duplicateBackfill = await api.post('/api/jobs/backfill-dedup/backfills')
+            .set('Idempotency-Key', 'backfill-once')
+            .send({ from: new Date(scheduledFor.getTime() - 1_000).toISOString(), to: scheduledFor.toISOString() })
+            .expect(202);
+        expect(duplicateBackfill.body).toEqual(backfill.body);
+        expect(await executions.processDueJobs(new Date(scheduledFor.getTime() + 1_000))).toBe(1);
+        const occurrenceCount = await pool.query<{ count: string }>(
+            `SELECT count(*)::text AS count FROM executions WHERE job_id = 'backfill-dedup' AND scheduled_for = $1`,
+            [scheduledFor]
+        );
+        expect(occurrenceCount.rows[0]?.count).toBe('1');
+
+        const queue = await api.get('/api/queues/default').expect(200);
+        await api.patch('/api/queues/default').set('If-Match', String(queue.body.policy.version))
+            .send({ paused: true, maxRunning: 2, maxStarts: 3, intervalMs: 60_000 }).expect(200)
+            .expect(response => expect(response.body).toMatchObject({ paused: true, maxRunning: 2, maxStarts: 3, intervalMs: 60_000 }));
+    });
+
+    it('matches incident notifications, signs durable deliveries, retries failures, and prevents alert loops', async () => {
+        const suffix = Date.now().toString();
+        const endpointSecret = 'NOTIFY_ENDPOINT_' + suffix;
+        const signingSecret = 'NOTIFY_SIGNING_' + suffix;
+        await security.secrets.put(endpointSecret, 'https://notifications.example.test/hook', 'Notification endpoint', adminUserId);
+        await security.secrets.put(signingSecret, 'integration-signing-key', 'Notification signing key', adminUserId);
+        const notifications = new NotificationRepository(pool);
+        const manager = new JobExecutionManager(executions, undefined, 1, 1000);
+        const failedRequests: Array<{ headers: HeadersInit | undefined; body: BodyInit | null | undefined }> = [];
+        const dispatcher = new NotificationDispatcher(notifications, security.secrets, {
+            pollMs: 10_000,
+            maxAttempts: 1,
+            fetchImplementation: async (_url, init) => {
+                failedRequests.push({ headers: init?.headers, body: init?.body });
+                return new Response('unavailable', { status: 503 });
+            }
+        });
+        const app = createApp({
+            pool, jobs: new JobService(jobs, executions), executions, manager, security,
+            notifications, notificationDispatcher: dispatcher
+        });
+        const api = authenticatedRequest(app);
+        const channel = await api.post('/api/notifications/channels').send({
+            name: 'Signed operations webhook',
+            kind: 'generic_webhook',
+            endpointSecretName: endpointSecret,
+            signingSecretName: signingSecret,
+            enabled: true
+        }).expect(201);
+        await api.post('/api/notifications/policies').send({
+            name: 'High failures',
+            channelId: channel.body.channelId,
+            enabled: true,
+            incidentKinds: ['execution_failure'],
+            minimumSeverity: 'high',
+            jobIds: ['notification-failure'],
+            lifecycleEvents: ['opened', 'reopened', 'severity_increased', 'resolved']
+        }).expect(201);
+        await jobs.create(job('notification-failure', 'inactive'));
+        const failed = await executions.enqueueManual('notification-failure');
+        expect((await executions.claimOldestQueued())?.executionId).toBe(failed.executionId);
+        await executions.finishExecution(failed.executionId, 'failed', 'NOTIFICATION_TEST', 'Execution failed');
+        expect((await notifications.listDeliveries())[0]).toMatchObject({ status: 'pending', attemptCount: 0 });
+
+        await dispatcher.start();
+        await dispatcher.shutdown();
+        const delivery = (await notifications.listDeliveries())[0]!;
+        expect(delivery).toMatchObject({ status: 'failed', attemptCount: 1, responseStatus: 503 });
+        expect(failedRequests).toHaveLength(1);
+        const headers = new Headers(failedRequests[0]!.headers);
+        expect(headers.get('X-Workline-Signature')).toMatch(/^sha256=[0-9a-f]{64}$/u);
+        expect(headers.get('X-Workline-Timestamp')).toMatch(/^\d+$/u);
+        expect((await pool.query<{ count: string }>('SELECT count(*)::text AS count FROM operational_attention_items')).rows[0]?.count).toBe('1');
+
+        await api.post('/api/notifications/deliveries/' + delivery.deliveryId + '/retry').expect(200)
+            .expect(response => expect(response.body.status).toBe('pending'));
+        await api.patch('/api/notifications/channels/' + channel.body.channelId)
+            .set('If-Match', '"' + channel.body.version + '"').send({ enabled: false }).expect(200);
+        await api.patch('/api/notifications/policies/00000000-0000-4000-8000-000000000001')
+            .set('If-Match', '1').send({ minimumSeverity: 'urgent' }).expect(422);
     });
 });
 

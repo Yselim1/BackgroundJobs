@@ -58,7 +58,8 @@ export interface UserAccessSummary {
 }
 
 export type AttentionKind = 'execution_failure' | 'webhook_failure';
-export type AttentionState = 'open' | 'ignored' | 'resolved';
+export type AttentionSeverity = 'critical' | 'high' | 'medium' | 'low';
+export type AttentionState = 'open' | 'acknowledged' | 'snoozed' | 'ignored' | 'resolved';
 
 export interface AttentionItem {
     attentionId: string;
@@ -69,10 +70,17 @@ export interface AttentionItem {
     reason: string;
     detailSnapshot: Record<string, unknown>;
     occurredAt: string;
+    lastOccurredAt: string;
+    fingerprint: string;
+    occurrenceCount: number;
+    severity: AttentionSeverity;
+    assigneeUserId: string | null;
+    snoozedUntil: string | null;
+    resolutionNote: string | null;
     state: AttentionState;
     stateChangedBy: { type: 'system' | 'user' | 'api_token'; userId: string | null; label: string } | null;
     stateChangedAt: string | null;
-    resolutionAction: 'rerun' | 'webhook_retry' | null;
+    resolutionAction: 'rerun' | 'webhook_retry' | 'manual' | null;
     resolutionDetails: Record<string, unknown> | null;
     createdAt: string;
     updatedAt: string;
@@ -203,6 +211,7 @@ export interface JobStep {
     FOREACH?: { ITEMS: string; MAX_CONCURRENCY?: number };
     RETRY?: RetryPolicy;
     FAIL_JOB_ON_FAILURE?: boolean;
+    REPLAY_SAFE?: boolean;
     [key: string]: unknown;
 }
 
@@ -219,6 +228,9 @@ export interface JobDefinition {
     MAX_CONCURRENCY?: number;
     FAILURE_POLICY?: 'fail_fast' | 'continue_independent';
     DEFAULT_STEP_RETRY?: RetryPolicy;
+    INPUT_SCHEMA?: Record<string, unknown>;
+    DEFAULT_INPUT?: Record<string, unknown>;
+    RUN_POLICY?: { MAX_RUNNING?: number; KEY?: string; OVERLAP?: { SCHEDULED?: 'skip' | 'queue' | 'cancel_oldest'; TRIGGERED?: 'skip' | 'queue' | 'cancel_oldest' } };
     STEPS: JobStep[];
     [key: string]: unknown;
 }
@@ -243,9 +255,14 @@ export interface ExecutionSummary {
     jobVersion: number | null;
     queue: string;
     priority: number;
+    concurrencyKey: string | null;
     parentExecutionId: string | null;
     automationTriggerId: string | null;
-    trigger: 'manual' | 'scheduled' | 'webhook' | 'job_completion';
+    replaySourceExecutionId: string | null;
+    resumeStepId: string | null;
+    testSelectedStepId: string | null;
+    suppressSideEffects: boolean;
+    trigger: 'manual' | 'scheduled' | 'webhook' | 'job_completion' | 'backfill' | 'test' | 'replay';
     status: ExecutionStatus;
     scheduledFor: string | null;
     requestedAt: string;
@@ -255,6 +272,7 @@ export interface ExecutionSummary {
     cancelRequestedAt: string | null;
     cancelRequestedBy: { type: 'user' | 'api_token'; userId: string | null; label: string } | null;
     durationMs: number | null;
+    queueDelayMs: number | null;
     error: { code: string | null; message: string } | null;
     skipReason: string | null;
 }
@@ -297,7 +315,7 @@ export interface ExecutionPage {
 export interface ExecutionFilters {
     jobId?: string;
     status?: ExecutionStatus;
-    trigger?: 'manual' | 'scheduled' | 'webhook' | 'job_completion';
+    trigger?: ExecutionSummary['trigger'];
     from?: string;
     to?: string;
     limit?: number;
@@ -350,5 +368,51 @@ export interface JobRevisionSummary {
 export interface JobRevision extends JobRevisionSummary { definition: JobDefinition; }
 export interface WorkerInstance { workerId: string; name: string; queues: string[]; concurrency: number; desiredState: 'accepting' | 'draining'; state: 'online' | 'draining' | 'drained' | 'offline' | 'stopped'; running: number; startedAt: string; lastHeartbeatAt: string; stoppedAt: string | null; }
 export interface QueueSummary { name: string; queued: number; running: number; workers: number; capacity: number; }
+export interface QueuePolicy { name: string; paused: boolean; maxRunning: number | null; maxStarts: number | null; intervalMs: number | null; version: number; updatedAt: string; }
+export interface QueueDetail extends QueueSummary { policy: QueuePolicy; saturation: number | null; oldestQueuedAt: string | null; oldestQueuedAgeMs: number | null; subscribedWorkers: WorkerInstance[]; affectedJobs: Array<{ id: string; name: string }>; recentExecutions: Array<Pick<ExecutionSummary, 'executionId' | 'jobId' | 'status' | 'trigger' | 'requestedAt' | 'startedAt' | 'finishedAt'>>; }
+export interface ActivityBucket { at: string; requested: number; successful: number; failed: number; p50DurationMs: number | null; p95DurationMs: number | null; averageQueueDelayMs: number | null; }
+export interface PlatformActivity { window: '6h' | '24h' | '7d'; bucketMs: number; startsAt: string; generatedAt: string; buckets: ActivityBucket[]; }
+export interface ExecutorCatalogItem { type: string; presentation: null | { displayName: string; description?: string; parameterSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown> } }
+export interface IncidentEvent { eventId: string; attentionId: string; eventType: string; actor: { type: 'system' | 'user' | 'api_token'; userId: string | null; label: string }; details: Record<string, unknown>; createdAt: string; }
+export type NotificationChannelKind = 'generic_webhook' | 'slack';
+export interface NotificationChannel {
+    channelId: string;
+    name: string;
+    kind: NotificationChannelKind;
+    endpointSecretName: string;
+    signingSecretName: string | null;
+    enabled: boolean;
+    version: number;
+    createdAt: string;
+    updatedAt: string;
+}
+export type NotificationLifecycleEvent = 'opened' | 'reopened' | 'severity_increased' | 'resolved';
+export interface NotificationPolicy {
+    policyId: string;
+    name: string;
+    channelId: string;
+    enabled: boolean;
+    incidentKinds: AttentionKind[];
+    minimumSeverity: AttentionSeverity;
+    jobIds: string[] | null;
+    lifecycleEvents: NotificationLifecycleEvent[];
+    version: number;
+    createdAt: string;
+    updatedAt: string;
+}
+export interface NotificationDelivery {
+    deliveryId: string;
+    incidentEventId: string;
+    channelId: string;
+    policyId: string;
+    status: 'pending' | 'delivering' | 'success' | 'failed';
+    attemptCount: number;
+    nextAttemptAt: string;
+    responseStatus: number | null;
+    lastError: string | null;
+    createdAt: string;
+    updatedAt: string;
+    deliveredAt: string | null;
+}
 export interface AutomationTrigger { triggerId: string; targetJobId: string; kind: 'webhook' | 'job_completion'; name: string; enabled: boolean; sourceJobId: string | null; terminalStatuses: Array<'success' | 'failed' | 'cancelled' | 'skipped'> | null; tokenSuffix: string | null; createdAt: string; updatedAt: string; lastTriggeredAt: string | null; }
 export interface AutomationTriggerEvent { eventId: string; triggerId: string; sourceExecutionId: string | null; queuedExecutionId: string | null; status: 'pending' | 'queued' | 'skipped' | 'failed'; reason: string | null; attemptCount: number; createdAt: string; updatedAt: string; }

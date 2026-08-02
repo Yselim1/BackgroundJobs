@@ -40,6 +40,8 @@ export interface JobRunOptions {
     observer?: ExecutionObserver;
     input?: Record<string, unknown>;
     secrets?: Record<string, string>;
+    stepIds?: ReadonlySet<string>;
+    reusedStepResults?: Record<string, StepLog>;
 }
 
 export class JobRunner {
@@ -54,17 +56,29 @@ export class JobRunner {
         try {
             const executableJob = assertValidJobDefinition(job);
             const steps = [...executableJob.STEPS].sort((first, second) => first.ORDER - second.ORDER);
+            const context: Record<string, unknown> = {
+                input: options.input ?? {},
+                secrets: options.secrets ?? {}
+            };
             for (const step of steps) {
+                const reused = options.reusedStepResults?.[step.ID];
+                if (reused?.status === 'success' || reused?.status === 'reused') {
+                    const reusedLog: StepLog = { ...reused, status: 'reused', reason: 'Output reused from the replay source execution.' };
+                    stepResults[step.ID] = reusedLog;
+                    successfulSteps.add(step.ID);
+                    context[step.ID] = reused.output;
+                    continue;
+                }
+                if (options.stepIds !== undefined && !options.stepIds.has(step.ID)) {
+                    stepResults[step.ID] = { ...baseStepLog(step, 'skipped'), reason: 'Step is outside the selected execution closure.' };
+                    continue;
+                }
                 pendingSteps.set(step.ID, step);
                 stepResults[step.ID] = baseStepLog(step, 'pending');
             }
             const failurePolicy = executableJob.FAILURE_POLICY ?? 'fail_fast';
             const maxConcurrency = executableJob.MAX_CONCURRENCY ?? 10;
             const limiter = new ConcurrencyLimiter(maxConcurrency);
-            const context: Record<string, unknown> = {
-                input: options.input ?? {},
-                secrets: options.secrets ?? {}
-            };
             let representativeFailure: Error | undefined;
 
             while (pendingSteps.size > 0) {

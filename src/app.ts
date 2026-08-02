@@ -28,6 +28,9 @@ import { JobExecutionManager } from './services/JobExecutionManager.js';
 import { JobService } from './services/JobService.js';
 import type { WebhookDispatcher } from './services/WebhookDispatcher.js';
 import type { AutomationDispatcher } from './services/AutomationDispatcher.js';
+import { createNotificationsController } from './controllers/notificationsController.js';
+import type { NotificationDispatcher } from './services/NotificationDispatcher.js';
+import type { NotificationRepository } from './repositories/NotificationRepository.js';
 import { JobValidationError } from './utils/jobValidator.js';
 
 export interface AppDependencies {
@@ -38,6 +41,8 @@ export interface AppDependencies {
     webhookDispatcher?: WebhookDispatcher;
     automations?: AutomationRepository;
     automationDispatcher?: AutomationDispatcher;
+    notifications?: NotificationRepository;
+    notificationDispatcher?: NotificationDispatcher;
     security: SecurityRuntime;
 }
 
@@ -53,7 +58,8 @@ export function createApp(dependencies: AppDependencies): express.Express {
             await dependencies.pool.query('SELECT 1');
             await assertSchemaCurrent(dependencies.pool);
             if (!dependencies.manager.started || (dependencies.webhookDispatcher !== undefined && !dependencies.webhookDispatcher.started)
-                || (dependencies.automationDispatcher !== undefined && !dependencies.automationDispatcher.started)) {
+                || (dependencies.automationDispatcher !== undefined && !dependencies.automationDispatcher.started)
+                || (dependencies.notificationDispatcher !== undefined && !dependencies.notificationDispatcher.started)) {
                 throw new Error('Scheduler, execution dispatcher, and webhook dispatcher have not started.');
             }
             res.status(200).json({ status: 'ready' });
@@ -79,6 +85,9 @@ export function createApp(dependencies: AppDependencies): express.Express {
         dependencies.executions,
         dependencies.webhookDispatcher
     ));
+    if (dependencies.notifications !== undefined) {
+        app.use('/api/notifications', createNotificationsController(dependencies.notifications, dependencies.notificationDispatcher));
+    }
     app.use('/api/platform', requirePermission('platform:read'), createPlatformController(
         dependencies.pool,
         dependencies.manager.capacity,

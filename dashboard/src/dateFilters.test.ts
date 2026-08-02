@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { calendarRangeToApi, localDayAfterIso, localDayStartIso } from './dateFilters';
+import { activityBucketRange, calendarRangeToApi, isoToLocalCalendarDate, localDayAfterIso, localDayStartIso, parseExactTimestampRange } from './dateFilters';
 
 const originalTimezone = process.env.TZ;
 
@@ -26,5 +26,33 @@ describe.sequential('calendar date filters', () => {
         ) / 3_600_000;
         expect(springHours).toBe(23);
         expect(autumnHours).toBe(25);
+    });
+
+    it('converts activity timestamps to the local date-filter format', () => {
+        expect(isoToLocalCalendarDate('2026-02-10T02:00:00.000Z')).toBe('2026-02-09');
+    });
+
+    it('clamps partial activity buckets to the exact generated window', () => {
+        expect(activityBucketRange(
+            '2026-02-10T10:00:00.000Z',
+            60 * 60_000,
+            '2026-02-10T10:15:00.000Z',
+            '2026-02-10T11:45:00.000Z'
+        )).toEqual({ from: '2026-02-10T10:15:00.000Z', to: '2026-02-10T11:00:00.000Z' });
+        expect(activityBucketRange(
+            '2026-02-10T11:00:00.000Z',
+            60 * 60_000,
+            '2026-02-10T10:15:00.000Z',
+            '2026-02-10T11:45:00.000Z'
+        )).toEqual({ from: '2026-02-10T11:00:00.000Z', to: '2026-02-10T11:45:00.000Z' });
+    });
+
+    it('accepts only ordered timestamp-level log ranges', () => {
+        expect(parseExactTimestampRange('2026-02-10T10:00:00Z', '2026-02-10T11:00:00Z')).toEqual({
+            from: '2026-02-10T10:00:00.000Z',
+            to: '2026-02-10T11:00:00.000Z'
+        });
+        expect(parseExactTimestampRange('2026-02-10', '2026-02-11')).toBeUndefined();
+        expect(parseExactTimestampRange('2026-02-10T11:00:00Z', '2026-02-10T10:00:00Z')).toBeUndefined();
     });
 });

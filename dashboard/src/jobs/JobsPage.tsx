@@ -7,6 +7,7 @@ import {
     getManagedSecrets,
     previewSchedule,
     replaceJob,
+    testJobStep,
     validateJob
 } from '../api';
 import { formatRelativeTime } from '../format';
@@ -24,6 +25,7 @@ import {
     type StepForm
 } from './jobForm';
 import { sortJobs, type JobSort } from './jobSort';
+import { WorkflowCanvas } from './WorkflowCanvas';
 
 interface JobsPageProps {
     jobs: Job[];
@@ -321,10 +323,12 @@ function JobEditor(props: {
         };
     });
     const [issues, setIssues] = useState<ValidationIssue[]>([]);
-    const [busy, setBusy] = useState<'validate' | 'save' | 'preview'>();
+    const [busy, setBusy] = useState<'validate' | 'save' | 'preview' | 'test'>();
     const [message, setMessage] = useState<string>();
     const [occurrences, setOccurrences] = useState<string[]>([]);
     const [secretReference, setSecretReference] = useState('');
+    const [selectedStepId, setSelectedStepId] = useState<string>();
+    const [rawDefinition, setRawDefinition] = useState(() => props.job === undefined ? '{}' : JSON.stringify(stripJobReadOnly(props.job), null, 2));
     const workflow = useMemo(() => workflowPreview(form.steps), [form.steps]);
 
     const update = <K extends keyof JobForm>(field: K, value: JobForm[K]) => {
@@ -392,6 +396,30 @@ function JobEditor(props: {
             setOccurrences([]);
         } finally {
             setBusy(undefined);
+        }
+    };
+
+    const handleTest = async () => {
+        if (selectedStepId === undefined) return;
+        if (!window.confirm('This draft test runs through normal workers and may perform real side effects. Queue it?')) return;
+        setBusy('test');
+        try {
+            const definition = await checkDefinition();
+            if (definition === undefined) return;
+            const execution = await testJobStep(definition, selectedStepId);
+            setMessage(`Test execution ${execution.executionId} queued. Production attention, automations, terminal webhooks, and notifications are suppressed.`);
+        } catch (caught) { setIssues([{ path: '$', code: 'TEST_FAILED', message: errorMessage(caught) }]); }
+        finally { setBusy(undefined); }
+    };
+
+    const applyRawDefinition = () => {
+        try {
+            const parsed = JSON.parse(rawDefinition) as Job;
+            setForm(createJobForm(parsed));
+            setIssues([]);
+            setMessage('Raw definition applied to the controlled editor.');
+        } catch (caught) {
+            setIssues([{ path: '$', code: 'RAW_DEFINITION_INVALID', message: errorMessage(caught) }]);
         }
     };
 
@@ -508,6 +536,24 @@ function JobEditor(props: {
                             <Field label="Queue priority" hint="-100 to 100; higher runs first">
                                 <input type="number" min="-100" max="100" value={form.priority} onChange={event => update('priority', event.target.value)} required />
                             </Field>
+                            <Field label="Maximum running executions">
+                                <input type="number" min="1" value={form.maxRunning} onChange={event => update('maxRunning', event.target.value)} />
+                            </Field>
+                            <Field label="Input concurrency key" hint="Optional path such as input.customerId">
+                                <input value={form.concurrencyKey} onChange={event => update('concurrencyKey', event.target.value)} placeholder="input.customerId" />
+                            </Field>
+                            <Field label="Scheduled overlap">
+                                <select value={form.scheduledOverlap} onChange={event => update('scheduledOverlap', event.target.value as JobForm['scheduledOverlap'])}><option value="skip">Skip</option><option value="queue">Queue</option><option value="cancel_oldest">Cancel oldest</option></select>
+                            </Field>
+                            <Field label="Triggered overlap">
+                                <select value={form.triggeredOverlap} onChange={event => update('triggeredOverlap', event.target.value as JobForm['triggeredOverlap'])}><option value="queue">Queue</option><option value="skip">Skip</option><option value="cancel_oldest">Cancel oldest</option></select>
+                            </Field>
+                            <Field label="Input schema · JSON Schema 2020-12" className="full">
+                                <textarea className="code-input" rows={7} value={form.inputSchema} onChange={event => update('inputSchema', event.target.value)} placeholder={'{\n  "type": "object",\n  "properties": {}\n}'} />
+                            </Field>
+                            <Field label="Complete default input · never merged" className="full">
+                                <textarea className="code-input" rows={5} value={form.defaultInput} onChange={event => update('defaultInput', event.target.value)} placeholder="{}" />
+                            </Field>
                             <Field label="Failure policy">
                                 <select
                                     value={form.failurePolicy}
@@ -569,6 +615,13 @@ function JobEditor(props: {
                                 <button className="button button-quiet" type="button" disabled={!props.secretNames.includes(secretReference)} onClick={() => void navigator.clipboard.writeText('{{secrets.' + secretReference + '}}')}>Copy reference</button>
                             </div>
                         )}
+                        <WorkflowCanvas
+                            steps={form.steps}
+                            secretNames={props.secretNames}
+                            issues={issues}
+                            onChange={steps => update('steps', steps)}
+                            onSelected={setSelectedStepId}
+                        />
                         <div className="step-editor-list">
                             {form.steps.map((step, index) => (
                                 <article className="step-editor" key={step.key}>
@@ -607,6 +660,7 @@ function JobEditor(props: {
                                         <Field label="Dependencies" hint="Comma-separated step IDs">
                                             <input value={step.dependencies} onChange={event => updateStep(step.key, { dependencies: event.target.value })} />
                                         </Field>
+                                        <label className="replay-safe-control"><input type="checkbox" checked={step.replaySafe} onChange={event => updateStep(step.key, { replaySafe: event.target.checked })} />Replay safe for operator step resume</label>
                                         <Field label="Executor parameters" hint="JSON object" className="full">
                                             <textarea
                                                 className="code-input"
@@ -643,6 +697,12 @@ function JobEditor(props: {
 
                     <section className="editor-section">
                         <details className="advanced-fields">
+                            <summary>Raw definition mode · lossless round-trip</summary>
+                            <p>Refresh from the controlled editor, edit any field, then apply it back. Cosmetic canvas coordinates are never included.</p>
+                            <div className="raw-definition-actions"><button type="button" className="button button-quiet" onClick={() => { try { setRawDefinition(JSON.stringify(buildJobDefinition(form), null, 2)); } catch (caught) { setIssues([{ path: '$', code: 'RAW_REFRESH_FAILED', message: errorMessage(caught) }]); } }}>Refresh from form</button><button type="button" className="button button-quiet" onClick={applyRawDefinition}>Apply raw JSON</button></div>
+                            <textarea className="code-input" value={rawDefinition} onChange={event => setRawDefinition(event.target.value)} rows={18} spellCheck={false} />
+                        </details>
+                        <details className="advanced-fields">
                             <summary>Advanced job options</summary>
                             <p>Webhook definitions and plugin-specific top-level fields as JSON.</p>
                             <textarea
@@ -660,6 +720,7 @@ function JobEditor(props: {
                         <button className="button button-quiet" type="button" onClick={() => void handleValidate()} disabled={busy !== undefined}>
                             {busy === 'validate' ? 'Validating…' : 'Validate'}
                         </button>
+                        <button className="button button-quiet" type="button" onClick={() => void handleTest()} disabled={busy !== undefined || selectedStepId === undefined}>{busy === 'test' ? 'Queuing test…' : selectedStepId === undefined ? 'Select a node to test' : `Test ${selectedStepId}`}</button>
                         <button className="button button-primary" disabled={busy !== undefined}>
                             {busy === 'save' ? 'Saving…' : editing ? 'Save changes' : 'Create job'}
                         </button>

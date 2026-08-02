@@ -2,6 +2,7 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import type { DatabasePool } from '../db/pool.js';
 import { ExecutorRegistry } from '../executors/ExecutorRegistry.js';
 import { AttentionRepository } from '../repositories/AttentionRepository.js';
+import { AppError } from '../errors.js';
 
 interface CountRow { count: string; }
 interface StatusCountRow { status: string; count: string; }
@@ -113,12 +114,109 @@ export function createPlatformController(pool: DatabasePool, workerConcurrency =
         res.status(200).json({ items: ExecutorRegistry.getSupportedTypes() });
     });
 
+    router.get('/executor-catalog', (_req, res) => {
+        res.status(200).json({ items: ExecutorRegistry.getCatalog() });
+    });
+
+    router.get('/activity', route(async (req, res) => {
+        const window = typeof req.query.window === 'string' ? req.query.window : '24h';
+        const settings = window === '6h' ? { hours: 6, bucketMs: 15 * 60_000 }
+            : window === '24h' ? { hours: 24, bucketMs: 60 * 60_000 }
+                : window === '7d' ? { hours: 7 * 24, bucketMs: 6 * 60 * 60_000 }
+                    : undefined;
+        if (settings === undefined) throw new AppError('INVALID_ACTIVITY_WINDOW', 'window must be 6h, 24h, or 7d.', 400);
+        const result = await pool.query<{
+            bucket: Date;
+            requested: string;
+            successful: string;
+            failed: string;
+            starts_at: Date;
+            generated_at: Date;
+            p50_duration_ms: string | null;
+            p95_duration_ms: string | null;
+            average_queue_delay_ms: string | null;
+        }>(
+            `WITH bounds AS (
+                SELECT generated_at,
+                       generated_at - ($1::integer * interval '1 hour') AS starts_at
+                FROM (SELECT date_trunc('milliseconds', clock_timestamp()) AS generated_at) AS activity_clock
+             ), buckets AS (
+                SELECT generate_series(
+                    to_timestamp(floor(extract(epoch FROM starts_at) * 1000 / $2) * $2 / 1000.0),
+                    to_timestamp(floor(extract(epoch FROM generated_at) * 1000 / $2) * $2 / 1000.0),
+                    $2::integer * interval '1 millisecond'
+                ) AS bucket FROM bounds
+             ), activity AS (
+                SELECT to_timestamp(floor(extract(epoch FROM requested_at) * 1000 / $2) * $2 / 1000.0) AS bucket,
+                       count(*)::text AS requested,
+                       count(*) FILTER (WHERE status = 'success')::text AS successful,
+                       count(*) FILTER (WHERE status = 'failed')::text AS failed,
+                       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms)
+                           FILTER (WHERE duration_ms IS NOT NULL))::text AS p50_duration_ms,
+                       round(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)
+                           FILTER (WHERE duration_ms IS NOT NULL))::text AS p95_duration_ms,
+                       round(avg(extract(epoch FROM (started_at - requested_at)) * 1000)
+                           FILTER (WHERE started_at IS NOT NULL))::text AS average_queue_delay_ms
+                FROM executions, bounds WHERE requested_at >= starts_at AND requested_at < generated_at
+                GROUP BY 1
+             )
+             SELECT b.bucket, bounds.starts_at, bounds.generated_at,
+                    coalesce(a.requested, '0') AS requested,
+                    coalesce(a.successful, '0') AS successful, coalesce(a.failed, '0') AS failed,
+                    a.p50_duration_ms, a.p95_duration_ms, a.average_queue_delay_ms
+             FROM buckets b CROSS JOIN bounds LEFT JOIN activity a USING (bucket) ORDER BY b.bucket`,
+            [settings.hours, settings.bucketMs]
+        );
+        res.status(200).json({
+            window, bucketMs: settings.bucketMs,
+            startsAt: result.rows[0]?.starts_at.toISOString() ?? new Date(Date.now() - settings.hours * 60 * 60_000).toISOString(),
+            generatedAt: result.rows[0]?.generated_at.toISOString() ?? new Date().toISOString(),
+            buckets: result.rows.map(row => ({
+                at: row.bucket.toISOString(), requested: Number(row.requested), successful: Number(row.successful),
+                failed: Number(row.failed), p50DurationMs: nullableNumber(row.p50_duration_ms),
+                p95DurationMs: nullableNumber(row.p95_duration_ms), averageQueueDelayMs: nullableNumber(row.average_queue_delay_ms)
+            }))
+        });
+    }));
+
+    router.get('/search', route(async (req, res) => {
+        const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+        if (query.length < 2 || query.length > 100) throw new AppError('INVALID_SEARCH_QUERY', 'q must contain between 2 and 100 characters.', 400);
+        const pattern = `%${query.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')}%`;
+        const [jobs, executions, incidents] = await Promise.all([
+            pool.query<{ id: string; name: string; status: string }>(
+                `SELECT id, definition->>'name' AS name, status FROM jobs
+                 WHERE id ILIKE $1 ESCAPE '\\' OR definition->>'name' ILIKE $1 ESCAPE '\\'
+                 ORDER BY updated_at DESC LIMIT 8`, [pattern]
+            ),
+            pool.query<{ id: string; job_id: string; status: string; requested_at: Date }>(
+                `SELECT id, job_id, status, requested_at FROM executions
+                 WHERE id::text ILIKE $1 ESCAPE '\\' OR job_id ILIKE $1 ESCAPE '\\'
+                 ORDER BY requested_at DESC LIMIT 8`, [pattern]
+            ),
+            pool.query<{ id: string; job_id: string; reason: string; state: string; severity: string }>(
+                `SELECT id, job_id, reason, state, severity FROM operational_attention_items
+                 WHERE reason ILIKE $1 ESCAPE '\\' OR job_id ILIKE $1 ESCAPE '\\'
+                 ORDER BY last_occurred_at DESC LIMIT 8`, [pattern]
+            )
+        ]);
+        const actions = [
+            { id: 'run-job', label: 'Run job', permission: 'operator' },
+            { id: 'create-job', label: 'Create job', permission: 'admin' },
+            { id: 'open-attention', label: 'Open Attention', permission: 'viewer' }
+        ].filter(action => action.label.toLowerCase().includes(query.toLowerCase()) &&
+            (action.permission === 'viewer' || req.auth!.role === 'admin' || (action.permission === 'operator' && req.auth!.role === 'operator')));
+        res.status(200).json({ jobs: jobs.rows, executions: executions.rows.map(item => ({ ...item, requested_at: item.requested_at.toISOString() })), incidents: incidents.rows, actions });
+    }));
+
     return router;
 }
 
 function statusMap(rows: StatusCountRow[]): Record<string, number> {
     return Object.fromEntries(rows.map(row => [row.status, Number(row.count)]));
 }
+
+function nullableNumber(value: string | null): number | null { return value === null ? null : Number(value); }
 
 type Handler = (req: Request, res: Response) => Promise<void>;
 function route(handler: Handler): (req: Request, res: Response, next: NextFunction) => void {

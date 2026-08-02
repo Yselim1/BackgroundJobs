@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { getExecutions } from '../api';
-import { calendarRangeToApi } from '../dateFilters';
+import { calendarRangeToApi, parseExactTimestampRange, type ExactTimestampRange } from '../dateFilters';
 import { formatDuration, formatRelativeTime, titleCase } from '../format';
 import { Pagination } from '../PageControls';
 import { pageSize as parsePageSize, positivePage } from '../pagination';
@@ -19,11 +19,13 @@ interface LogsPageProps {
 
 export function LogsPage(props: LogsPageProps) {
     const initial = useMemo(() => routeSearchParams(), []);
+    const initialExactRange = useMemo(() => parseExactTimestampRange(initial.get('fromTs'), initial.get('toTs')), [initial]);
     const [jobId, setJobId] = useState(initial.get('jobId') ?? 'all');
     const [status, setStatus] = useState<ExecutionStatus | 'all'>((initial.get('status') as ExecutionStatus | null) ?? 'all');
     const [trigger, setTrigger] = useState<'all' | 'manual' | 'scheduled'>((initial.get('trigger') as 'manual' | 'scheduled' | null) ?? 'all');
-    const [from, setFrom] = useState(initial.get('from') ?? '');
-    const [to, setTo] = useState(initial.get('to') ?? '');
+    const [from, setFrom] = useState(initialExactRange === undefined ? initial.get('from') ?? '' : '');
+    const [to, setTo] = useState(initialExactRange === undefined ? initial.get('to') ?? '' : '');
+    const [exactRange, setExactRange] = useState<ExactTimestampRange | undefined>(initialExactRange);
     const [sort, setSort] = useState<'newest' | 'oldest'>((initial.get('sort') as 'oldest' | null) ?? 'newest');
     const [page, setPage] = useState(() => positivePage(initial.get('page')));
     const [pageSize, setPageSize] = useState<25 | 50 | 100>(() => parsePageSize(initial.get('pageSize')));
@@ -35,7 +37,7 @@ export function LogsPage(props: LogsPageProps) {
     const load = useCallback(async () => {
         setLoading(true);
         try {
-            const range = calendarRangeToApi(from, to);
+            const range = exactRange ?? calendarRangeToApi(from, to);
             const result = await getExecutions({
                 ...(jobId === 'all' ? {} : { jobId }),
                 ...(status === 'all' ? {} : { status }),
@@ -59,17 +61,22 @@ export function LogsPage(props: LogsPageProps) {
         } finally {
             setLoading(false);
         }
-    }, [from, jobId, page, pageSize, props.onError, sort, status, to, trigger]);
+    }, [exactRange, from, jobId, page, pageSize, props.onError, sort, status, to, trigger]);
 
     useEffect(() => {
         const path = window.location.pathname.startsWith('/logs/')
             ? window.location.pathname
             : '/logs';
         setRouteQuery(path, {
-            jobId, status, trigger, from, to, sort,
+            jobId, status, trigger,
+            from: exactRange === undefined ? from : undefined,
+            to: exactRange === undefined ? to : undefined,
+            fromTs: exactRange?.from,
+            toTs: exactRange?.to,
+            sort,
             page: String(page), pageSize: String(pageSize)
         });
-    }, [from, jobId, page, pageSize, sort, status, to, trigger]);
+    }, [exactRange, from, jobId, page, pageSize, sort, status, to, trigger]);
 
     useEffect(() => { void load(); }, [load, props.liveVersion]);
 
@@ -104,14 +111,18 @@ export function LogsPage(props: LogsPageProps) {
                         <option value="all">All triggers</option><option value="manual">Manual</option><option value="scheduled">Scheduled</option>
                     </select>
                 </Filter>
-                <Filter label="From"><input type="date" value={from} onChange={event => reset(() => setFrom(event.target.value))} /></Filter>
-                <Filter label="To"><input type="date" value={to} onChange={event => reset(() => setTo(event.target.value))} /></Filter>
+                <Filter label="From"><input type="date" value={from} onChange={event => reset(() => { setExactRange(undefined); setFrom(event.target.value); })} /></Filter>
+                <Filter label="To"><input type="date" value={to} onChange={event => reset(() => { setExactRange(undefined); setTo(event.target.value); })} /></Filter>
                 <Filter label="Sort">
                     <select value={sort} onChange={event => reset(() => setSort(event.target.value as typeof sort))}>
                         <option value="newest">Newest first</option><option value="oldest">Oldest first</option>
                     </select>
                 </Filter>
             </div>
+            {exactRange !== undefined && <div className="log-time-filter" role="status">
+                <span><small>Exact graph interval</small><strong>{formatExactRange(exactRange)}</strong></span>
+                <button type="button" onClick={() => reset(() => setExactRange(undefined))}>Clear interval</button>
+            </div>}
             <div className="panel logs-panel table-wrap">
                 <table>
                     <thead><tr><th>Job / execution</th><th>Status</th><th>Trigger</th><th>Requested by</th><th>Requested</th><th>Queue time</th><th>Duration</th></tr></thead>
@@ -145,6 +156,17 @@ export function LogsPage(props: LogsPageProps) {
             />
         </section>
     );
+}
+
+function formatExactRange(range: ExactTimestampRange): string {
+    const from = new Date(range.from);
+    const to = new Date(range.to);
+    const sameDay = from.getFullYear() === to.getFullYear()
+        && from.getMonth() === to.getMonth()
+        && from.getDate() === to.getDate();
+    const time = (value: Date) => value.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    if (sameDay) return `${from.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}, ${time(from)}–${time(to)}`;
+    return `${from.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} – ${to.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
 }
 
 function Filter(props: { label: string; children: React.ReactNode }) {

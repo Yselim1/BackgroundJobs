@@ -169,7 +169,9 @@ export class JobExecutionManager {
             }
             const secretValues = this.secrets === undefined ? {} : await this.secrets.resolveForJob(jobDefinition);
             const result = await this.runner.run(jobDefinition, {
-                signal: controller.signal, observer: this.observerFor(executionId), input, secrets: secretValues
+                signal: controller.signal, observer: this.observerFor(executionId), input, secrets: secretValues,
+                ...(claimed.stepIds === undefined ? {} : { stepIds: claimed.stepIds }),
+                ...(claimed.reusedStepResults === undefined ? {} : { reusedStepResults: claimed.reusedStepResults })
             });
             const cancellationWonRace = await this.executions.isCancellationRequested(executionId);
             const status = cancellationWonRace ? 'cancelled' : result.status;

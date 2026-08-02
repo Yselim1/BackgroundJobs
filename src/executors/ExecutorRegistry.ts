@@ -6,10 +6,27 @@ import { ScriptExecutor } from './ScriptExecutor.js';
 
 const PLUGIN_TYPE = /^[A-Z][A-Z0-9_]*$/u;
 const BUILTIN_PLUGINS: StepExecutorPlugin[] = [
-    { type: 'RESTAPI', executor: new RestApiExecutor() },
-    { type: 'SCRIPT', executor: new ScriptExecutor() },
-    { type: 'COMMAND', executor: new CommandExecutor() },
-    { type: 'PYTHON', executor: new PythonExecutor() }
+    { type: 'RESTAPI', executor: new RestApiExecutor(), presentation: {
+        displayName: 'REST API', description: 'Call an HTTP endpoint.',
+        parameterSchema: { type: 'object', required: ['URL'], properties: {
+            URL: { type: 'string' }, METHOD: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] },
+            HEADERS: { type: 'object', additionalProperties: { type: 'string' } }, QUERY: { type: 'object' }, BODY: {},
+            TIMEOUT_MS: { type: 'integer', minimum: 1 }, RESPONSE_TYPE: { type: 'string', enum: ['auto', 'json', 'text'] }
+        }, additionalProperties: true },
+        outputSchema: { type: 'object', properties: { status: { type: 'integer' }, statusText: { type: 'string' }, headers: { type: 'object' }, data: {} } }
+    } },
+    { type: 'SCRIPT', executor: new ScriptExecutor(), presentation: {
+        displayName: 'JavaScript', description: 'Run JavaScript in the worker process.',
+        parameterSchema: { type: 'object', required: ['CODE'], properties: { CODE: { type: 'string' }, TIMEOUT_MS: { type: 'integer', minimum: 1 } }, additionalProperties: true }
+    } },
+    { type: 'COMMAND', executor: new CommandExecutor(), presentation: {
+        displayName: 'Command', description: 'Run a local command on the worker.',
+        parameterSchema: { type: 'object', required: ['COMMAND'], properties: { COMMAND: { type: 'string' }, CWD: { type: 'string' }, ENV: { type: 'object' }, TIMEOUT_MS: { type: 'integer', minimum: 1 } }, additionalProperties: true }
+    } },
+    { type: 'PYTHON', executor: new PythonExecutor(), presentation: {
+        displayName: 'Python', description: 'Run a Python snippet on the worker.',
+        parameterSchema: { type: 'object', required: ['CODE'], properties: { CODE: { type: 'string' }, ENV: { type: 'object' }, TIMEOUT_MS: { type: 'integer', minimum: 1 } }, additionalProperties: true }
+    } }
 ];
 
 export class ExecutorRegistry {
@@ -26,6 +43,10 @@ export class ExecutorRegistry {
 
     static getSupportedTypes(): readonly string[] {
         return [...this.plugins.keys()];
+    }
+
+    static getCatalog(): Array<{ type: string; presentation: StepExecutorPlugin['presentation'] | null }> {
+        return [...this.plugins.values()].map(plugin => ({ type: plugin.type, presentation: plugin.presentation ?? null }));
     }
 
     static getExecutor(type: string): IStepExecutor {
@@ -64,7 +85,8 @@ export function normalizePlugin(plugin: StepExecutorPlugin): StepExecutorPlugin 
     return Object.freeze({
         type,
         executor: plugin.executor,
-        ...(plugin.validate === undefined ? {} : { validate: plugin.validate })
+        ...(plugin.validate === undefined ? {} : { validate: plugin.validate }),
+        ...(plugin.presentation === undefined ? {} : { presentation: structuredClone(plugin.presentation) })
     });
 }
 

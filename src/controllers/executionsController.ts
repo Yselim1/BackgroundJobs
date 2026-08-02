@@ -6,7 +6,7 @@ import type { ExecutionStatus, ExecutionTrigger } from '../types/index.js';
 import { requirePermission } from '../security/middleware.js';
 
 const STATUSES = new Set<ExecutionStatus>(['queued', 'running', 'success', 'failed', 'cancelled', 'skipped']);
-const TRIGGERS = new Set<ExecutionTrigger>(['manual', 'scheduled', 'webhook', 'job_completion']);
+const TRIGGERS = new Set<ExecutionTrigger>(['manual', 'scheduled', 'webhook', 'job_completion', 'backfill', 'test', 'replay']);
 const TERMINAL_STATUSES = new Set<ExecutionStatus>(['success', 'failed', 'cancelled', 'skipped']);
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
 
@@ -81,10 +81,35 @@ export function createExecutionsController(executions: ExecutionRepository, mana
         if (execution === undefined) throw new AppError('EXECUTION_NOT_FOUND', `Execution ${req.params.id} not found.`, 404);
         res.status(200).json(execution);
     }));
+    router.post('/:id/replay', requirePermission('jobs:run'), route(async (req, res) => {
+        const options = parseReplay(req.body);
+        const execution = await executions.enqueueReplay(req.params.id as string, req.auth!, options);
+        res.status(202).location(`/api/executions/${execution.executionId}`).json(execution);
+    }));
     router.post('/:id/cancel', requirePermission('executions:cancel'), route(async (req, res) => {
         res.status(200).json(await manager.cancel(req.params.id as string, req.auth));
     }));
     return router;
+}
+
+function parseReplay(body: unknown): { useCurrentDefinition?: boolean; resumeStepId?: string } {
+    if (body === undefined) return {};
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+        throw new AppError('INVALID_REPLAY', 'Request body must be an object.', 422);
+    }
+    const record = body as Record<string, unknown>;
+    const unsupported = Object.keys(record).filter(key => key !== 'useCurrentDefinition' && key !== 'resumeStepId');
+    if (unsupported.length > 0) throw new AppError('INVALID_REPLAY', `Unsupported replay field: ${unsupported[0]}.`, 422);
+    if (record.useCurrentDefinition !== undefined && typeof record.useCurrentDefinition !== 'boolean') {
+        throw new AppError('INVALID_REPLAY', 'useCurrentDefinition must be a boolean.', 422);
+    }
+    if (record.resumeStepId !== undefined && (typeof record.resumeStepId !== 'string' || record.resumeStepId.trim().length === 0)) {
+        throw new AppError('INVALID_REPLAY', 'resumeStepId must be a non-empty string.', 422);
+    }
+    return {
+        ...(record.useCurrentDefinition === undefined ? {} : { useCurrentDefinition: record.useCurrentDefinition }),
+        ...(typeof record.resumeStepId === 'string' ? { resumeStepId: record.resumeStepId.trim() } : {})
+    };
 }
 
 async function streamAllEvents(executions: ExecutionRepository, req: Request, res: Response): Promise<void> {

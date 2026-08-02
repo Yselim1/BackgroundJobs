@@ -3,7 +3,6 @@ import { ExecutionRepository } from '../repositories/ExecutionRepository.js';
 import { JobRepository } from '../repositories/JobRepository.js';
 import type { AuthenticatedActor, ExecutionSummary, Job, JobExecutionPlan, JobRevision, JobRevisionSummary, JobStatus, JobValidationResult, JobView, PageResponse, Step } from '../types/index.js';
 import { buildDependencyLevels } from '../utils/jobGraph.js';
-import { normalizeExecutionInput } from '../utils/executionInput.js';
 import { assertValidJobDefinition, JobValidationError, validateJobDefinition } from '../utils/jobValidator.js';
 import { assertValidCron, nextOccurrence } from '../utils/cron.js';
 
@@ -88,8 +87,47 @@ export class JobService {
         return { schedule, timezone, generatedAt: generatedAt.toISOString(), occurrences };
     }
 
-    async startJob(jobId: string, input?: unknown, actor?: AuthenticatedActor): Promise<ExecutionSummary> {
-        return this.executions.enqueueManual(jobId, normalizeExecutionInput(input), actor);
+    async validateRunInput(jobId: string, input: unknown, inputProvided: boolean): Promise<{ valid: true; input: Record<string, unknown> }> {
+        return this.executions.validateRunInput(jobId, input, inputProvided);
+    }
+
+    async startJob(
+        jobId: string,
+        input?: unknown,
+        actor?: AuthenticatedActor,
+        idempotencyKey?: string,
+        inputProvided = input !== undefined
+    ): Promise<ExecutionSummary> {
+        return this.executions.enqueueManual(jobId, input, actor, {
+            inputProvided,
+            ...(idempotencyKey === undefined ? {} : { idempotencyKey })
+        });
+    }
+
+    async testRun(
+        draftInput: unknown,
+        selectedStepId: string,
+        input: unknown,
+        inputProvided: boolean,
+        actor: AuthenticatedActor
+    ): Promise<ExecutionSummary> {
+        return this.executions.enqueueTest(assertValidJobDefinition(draftInput), selectedStepId, input, inputProvided, actor);
+    }
+
+    async previewBackfill(jobId: string, from: Date, to: Date): ReturnType<ExecutionRepository['previewBackfill']> {
+        return this.executions.previewBackfill(jobId, from, to);
+    }
+
+    async applyBackfill(
+        jobId: string,
+        from: Date,
+        to: Date,
+        input: unknown,
+        inputProvided: boolean,
+        actor: AuthenticatedActor,
+        idempotencyKey?: string
+    ): ReturnType<ExecutionRepository['applyBackfill']> {
+        return this.executions.applyBackfill(jobId, from, to, input, inputProvided, actor, idempotencyKey);
     }
 
     async getJobWithID(id: string): Promise<JobView> {

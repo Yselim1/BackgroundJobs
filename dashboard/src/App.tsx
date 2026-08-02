@@ -13,7 +13,8 @@ import {
     getOverview,
     login,
     logout,
-    runJob,
+    readiness,
+    replayExecution,
 } from './api';
 import { AdminPage } from './admin/AdminPage';
 import { AttentionDrawer } from './attention/AttentionDrawer';
@@ -21,6 +22,7 @@ import { AttentionPage } from './attention/AttentionPage';
 import { AuditPage } from './audit/AuditPage';
 import { formatDuration, formatRelativeTime, titleCase } from './format';
 import { JobsPage } from './jobs/JobsPage';
+import { AutomationsPage } from './jobs/AutomationsPage';
 import { JobDetailPage } from './jobs/JobDetailPage';
 import { LogsPage } from './logs/LogsPage';
 import { WorkersPage } from './workers/WorkersPage';
@@ -38,14 +40,18 @@ import type {
     PlatformOverview,
     WebhookDelivery
 } from './types';
+import { ActivityChart } from './ActivityChart';
+import { CommandPalette } from './CommandPalette';
+import { RunWorkbench } from './RunWorkbench';
 
 const EXECUTION_STATUSES: Array<ExecutionStatus | 'all'> = [
     'all', 'running', 'queued', 'failed', 'success', 'cancelled', 'skipped'
 ];
 function useDashboardRoute(): DashboardRoute {
-    const [route, setRoute] = useState<DashboardRoute>(() => parseDashboardRoute(normalizeLegacyHash()));
+    const currentRoute = () => parseDashboardRoute(normalizeLegacyHash(), window.location.search);
+    const [route, setRoute] = useState<DashboardRoute>(currentRoute);
     useEffect(() => {
-        const update = () => setRoute(parseDashboardRoute(normalizeLegacyHash()));
+        const update = () => setRoute(currentRoute());
         const followInternalLink = (event: MouseEvent) => {
             if (
                 event.defaultPrevented || event.button !== 0 || event.metaKey
@@ -116,6 +122,13 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
     const [error, setError] = useState<string>();
     const [selectedAttention, setSelectedAttention] = useState<AttentionItem>();
     const [attentionRefreshVersion, setAttentionRefreshVersion] = useState(0);
+    const [runTarget, setRunTarget] = useState<Job>();
+    const [railCollapsed, setRailCollapsed] = useState(() => localStorage.getItem('workline:rail-collapsed') === 'true');
+    const [streamConnected, setStreamConnected] = useState(false);
+    const [platformReady, setPlatformReady] = useState<boolean>();
+    const connectionState: 'Online' | 'Degraded' | 'Reconnecting' = platformReady === false
+        ? 'Degraded'
+        : streamConnected ? 'Online' : 'Reconnecting';
     const canRun = props.session.permissions.includes('jobs:run');
     const canCancel = props.session.permissions.includes('executions:cancel');
     const canWriteJobs = props.session.permissions.includes('jobs:write');
@@ -156,6 +169,18 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
             setLoading(false);
         }
     }, [executionPage, status]);
+
+    const checkReadiness = useCallback(async () => {
+        const ready = await readiness();
+        setPlatformReady(ready);
+        return ready;
+    }, []);
+
+    const refreshDashboard = useCallback(async () => {
+        await Promise.all([refresh(), checkReadiness()]);
+        setLiveVersion(value => value + 1);
+        setAttentionRefreshVersion(value => value + 1);
+    }, [checkReadiness, refresh]);
 
     const openExecution = useCallback(async (executionId: string) => {
         try {
@@ -202,9 +227,16 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                 void openExecution(payload.executionId);
             }
         });
-        source.onerror = () => undefined;
+        source.onopen = () => setStreamConnected(true);
+        source.onerror = () => setStreamConnected(false);
         return () => source.close();
     }, [openExecution, refresh, selected?.executionId]);
+
+    useEffect(() => {
+        void checkReadiness();
+        const timer = window.setInterval(() => void checkReadiness(), 15_000);
+        return () => window.clearInterval(timer);
+    }, [checkReadiness]);
 
     useEffect(() => {
         if (route.page === 'logs' && route.executionId !== undefined) {
@@ -213,16 +245,8 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
     }, [openExecution, route.page, route.page === 'logs' ? route.executionId : undefined]);
 
     const handleRun = async (jobId: string) => {
-        setBusy('run:' + jobId);
-        try {
-            const queued = await runJob(jobId);
-            await refresh(true);
-            await openExecution(queued.executionId);
-        } catch (caught) {
-            setError(caught instanceof Error ? caught.message : String(caught));
-        } finally {
-            setBusy(undefined);
-        }
+        const job = jobs.find(item => item.id === jobId);
+        if (job !== undefined) setRunTarget(job);
     };
 
     const handleCancel = async (executionId: string) => {
@@ -243,35 +267,55 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
     };
 
     return (
-        <div className="shell">
+        <div className={'shell operations-shell ' + (railCollapsed ? 'rail-collapsed' : '')}>
+            <aside className="navigation-rail">
+                <div className="rail-brand-row">
+                    <a className="brand" href="/" aria-label="Workline dashboard home"><span className="brand-mark">W</span><span><strong>Workline</strong><small>Background operations</small></span></a>
+                    <button
+                        className="rail-toggle"
+                        type="button"
+                        onClick={() => setRailCollapsed(value => { localStorage.setItem('workline:rail-collapsed', String(!value)); return !value; })}
+                        aria-label={railCollapsed ? 'Expand navigation' : 'Collapse navigation'}
+                        title={railCollapsed ? 'Expand navigation' : 'Collapse navigation'}
+                    >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M4 4h16v16H4zM9 4v16" />
+                            <path d={railCollapsed ? 'm13 9 3 3-3 3' : 'm16 9-3 3 3 3'} />
+                        </svg>
+                    </button>
+                </div>
+                <nav aria-label="Primary navigation">
+                    <p>Operate</p>
+                    <a href="/" aria-current={route.page === 'overview' ? 'page' : undefined}><i>01</i><span>Overview</span></a>
+                    {canReadAttention && <a href="/attention" aria-current={route.page === 'attention' ? 'page' : undefined}><i>02</i><span>Attention</span></a>}
+                    <a href="/logs" aria-current={route.page === 'logs' ? 'page' : undefined}><i>03</i><span>Logs</span></a>
+                    <p>Build</p>
+                    <a href="/jobs" aria-current={route.page === 'jobs' || route.page === 'job-detail' ? 'page' : undefined}><i>04</i><span>Jobs</span><b>{jobs.length}</b></a>
+                    <a href="/jobs?view=automations" aria-current={route.page === 'automations' ? 'page' : undefined}><i>05</i><span>Automations</span></a>
+                    <p>Manage</p>
+                    {canViewWorkers && <a href="/workers" aria-current={route.page === 'workers' ? 'page' : undefined}><i>06</i><span>Workers</span></a>}
+                    {canReadAudit && <a href="/audit" aria-current={route.page === 'audit' ? 'page' : undefined}><i>07</i><span>Audit</span></a>}
+                    {canViewAdmin && <a href="/admin" aria-current={route.page === 'admin' ? 'page' : undefined}><i>08</i><span>Administration</span></a>}
+                </nav>
+            </aside>
             <header className="topbar">
-                <a className="brand" href="/" aria-label="Workline dashboard home">
+                <a className="brand mobile-brand" href="/" aria-label="Workline dashboard home">
                     <span className="brand-mark" aria-hidden="true">W</span>
                     <span>
                         <strong>Workline</strong>
                         <small>Background operations</small>
                     </span>
                 </a>
-                <nav className="primary-nav" aria-label="Primary navigation">
-                    <a href="/" aria-current={route.page === 'overview' ? 'page' : undefined}>Overview</a>
-                    <a href="/jobs" aria-current={route.page === 'jobs' || route.page === 'job-detail' ? 'page' : undefined}>
-                        Jobs <span>{jobs.length}</span>
-                    </a>
-                    <a href="/logs" aria-current={route.page === 'logs' ? 'page' : undefined}>Logs</a>
-                    {canViewWorkers && <a href="/workers" aria-current={route.page === 'workers' ? 'page' : undefined}>Workers</a>}
-                    {canReadAttention && <a href="/attention" aria-current={route.page === 'attention' ? 'page' : undefined}>Attention</a>}
-                    {canReadAudit && <a href="/audit" aria-current={route.page === 'audit' ? 'page' : undefined}>Audit</a>}
-                    {canViewAdmin && <a href="/admin" aria-current={route.page === 'admin' ? 'page' : undefined}>Administration</a>}
-                </nav>
+                <button className="command-trigger" onClick={() => window.dispatchEvent(new Event('workline:open-command'))}>Search <kbd>Ctrl K</kbd></button>
                 <div className="header-tools">
-                    <span className="system-badge" title="Scheduler and dispatchers are online">
+                    <span className={'system-badge state-' + connectionState.toLowerCase()} title="Readiness and live event-stream state">
                         <span className="pulse" aria-hidden="true" />
-                        Online
+                        {connectionState}
                     </span>
                     <ProfileMenu
                         session={props.session}
                         loading={loading}
-                        onRefresh={() => refresh()}
+                        onRefresh={refreshDashboard}
                         onLogout={handleLogout}
                     />
                 </div>
@@ -304,6 +348,7 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                             <DetailMetric label="Queue latency · 24h" value={formatDuration(overview?.executions.averageQueueLatencyMs24h)} note={'Oldest queued ' + formatDuration(overview?.executions.oldestQueuedAgeMs)} />
                             <DetailMetric label="Success rate · 24h" value={overview?.executions.successRate24h === null || overview?.executions.successRate24h === undefined ? '—' : overview.executions.successRate24h + '%'} note={(overview?.executions.failed24h ?? 0) + ' failed executions'} />
                         </section>
+                        <ActivityChart onError={setError} />
 
                         <section className="panel attention-panel" id="attention-queue" aria-label="Attention queue">
                             <div className="panel-heading">
@@ -406,6 +451,14 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                         onChanged={() => refresh(true)}
                         onError={setError}
                     />
+                ) : route.page === 'automations' ? (
+                    <AutomationsPage
+                        jobs={jobs}
+                        canWrite={canWriteJobs}
+                        refreshVersion={liveVersion}
+                        onOpenExecution={openExecution}
+                        onError={setError}
+                    />
                 ) : route.page === 'job-detail' ? (
                     <JobDetailPage
                         job={jobs.find(job => job.id === route.jobId)}
@@ -425,6 +478,7 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                             refreshVersion={attentionRefreshVersion}
                             onOpen={attentionId => void openAttention(attentionId)}
                             onError={setError}
+                            canManage={canManageAttention}
                         />
                     ) : (
                         <section className="page-heading"><div><p className="eyebrow">Restricted</p><h1>Attention</h1><p>You do not have permission to inspect attention items.</p></div></section>
@@ -461,6 +515,17 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                 }}
                 onCancel={handleCancel}
                 canCancel={canCancel}
+                canReplay={canRun}
+                onReplay={async (executionId, options) => {
+                    const replay = await replayExecution(executionId, options);
+                    await refresh(true);
+                    await openExecution(replay.executionId);
+                }}
+            />
+            <RunWorkbench
+                job={runTarget}
+                onClose={() => setRunTarget(undefined)}
+                onQueued={async executionId => { await refresh(true); await openExecution(executionId); }}
             />
             <AttentionDrawer
                 item={selectedAttention}
@@ -477,6 +542,7 @@ function Dashboard(props: { session: AuthSession; onLoggedOut: () => void }) {
                 }}
                 onError={setError}
             />
+            <CommandPalette />
         </div>
     );
 }
@@ -488,6 +554,7 @@ function ProfileMenu(props: {
     onLogout: () => Promise<void>;
 }) {
     const [open, setOpen] = useState(false);
+    const [refreshState, setRefreshState] = useState<'idle' | 'refreshing' | 'done'>('idle');
     const root = useRef<HTMLDivElement>(null);
     const initials = profileInitials(props.session.user.displayName, props.session.user.email);
 
@@ -514,7 +581,10 @@ function ProfileMenu(props: {
                 aria-label={`Open account menu for ${props.session.user.displayName}`}
                 aria-haspopup='menu'
                 aria-expanded={open}
-                onClick={() => setOpen(value => !value)}
+                onClick={() => {
+                    if (!open) setRefreshState('idle');
+                    setOpen(value => !value);
+                }}
             >
                 <span className='profile-avatar' aria-hidden='true'>{initials}</span>
                 <span className='profile-chevron' aria-hidden='true'>⌄</span>
@@ -532,14 +602,20 @@ function ProfileMenu(props: {
                     <div className='profile-actions'>
                         <button
                             role='menuitem'
-                            disabled={props.loading}
+                            disabled={props.loading || refreshState === 'refreshing'}
                             onClick={() => {
-                                setOpen(false);
-                                void props.onRefresh();
+                                setRefreshState('refreshing');
+                                void props.onRefresh()
+                                    .then(() => setRefreshState('done'))
+                                    .catch(() => setRefreshState('idle'));
                             }}
                         >
-                            <span aria-hidden='true'>↻</span>
-                            {props.loading ? 'Refreshing…' : 'Refresh dashboard'}
+                            <span aria-hidden='true'>{refreshState === 'done' ? '✓' : '↻'}</span>
+                            <span aria-live='polite'>
+                                {refreshState === 'refreshing' || props.loading
+                                    ? 'Refreshing…'
+                                    : refreshState === 'done' ? 'Dashboard refreshed' : 'Refresh dashboard'}
+                            </span>
                         </button>
                         <button
                             className='profile-signout'
@@ -687,15 +763,30 @@ function StatusPill({ status }: { status: string }) {
     return <span className={'status status-' + status}><i aria-hidden="true" />{titleCase(status)}</span>;
 }
 
+function waterfallWidth(queueDelay: number | null, duration: number | null): string {
+    const queue = queueDelay ?? 0; const run = duration ?? 0; const total = Math.max(1, queue + run);
+    return `${Math.max(8, Math.min(85, queue / total * 100))}%`;
+}
+
+function JsonExplorer({ value }: { value: unknown }) {
+    const [search, setSearch] = useState(''); const [wrap, setWrap] = useState(false);
+    const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    const visible = search.trim().length === 0 ? text : text.split('\n').filter(line => line.toLowerCase().includes(search.toLowerCase())).join('\n');
+    return <div className="json-explorer"><div><input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search JSON" /><button onClick={() => setWrap(value => !value)}>{wrap ? 'No wrap' : 'Wrap'}</button><button onClick={() => void navigator.clipboard.writeText(text)}>Copy</button></div><pre className={wrap ? 'wrap' : ''}>{visible || 'No matching JSON lines.'}</pre></div>;
+}
+
 function ExecutionDrawer(props: {
     execution?: ExecutionDetail;
     webhooks: WebhookDelivery[];
     busy: boolean;
     canCancel: boolean;
+    canReplay: boolean;
     onClose: () => void;
     onCancel: (executionId: string) => Promise<void>;
+    onReplay: (executionId: string, options: { useCurrentDefinition?: boolean; resumeStepId?: string }) => Promise<void>;
 }) {
     const execution = props.execution;
+    const [replayBusy, setReplayBusy] = useState(false);
     useModalBehavior(execution !== undefined, props.onClose);
     return (
         <>
@@ -748,14 +839,16 @@ function ExecutionDrawer(props: {
                                 {props.busy ? 'Cancelling…' : 'Cancel execution'}
                             </button>
                         )}
+                        {props.canReplay && ['success', 'failed', 'cancelled', 'skipped'].includes(execution.status) && <div className="replay-actions"><button className="button button-run" disabled={replayBusy} onClick={() => { setReplayBusy(true); void props.onReplay(execution.executionId, {}).finally(() => setReplayBusy(false)); }}>Replay exact snapshot</button><button className="button button-quiet" disabled={replayBusy} onClick={() => { if (window.confirm('Replay with the current job definition instead of the stored snapshot?')) { setReplayBusy(true); void props.onReplay(execution.executionId, { useCurrentDefinition: true }).finally(() => setReplayBusy(false)); } }}>Use current definition</button></div>}
                         {execution.error !== null && (
                             <div className="execution-error">
                                 <strong>{execution.error.code ?? 'Execution failed'}</strong>
                                 <p>{execution.error.message}</p>
                             </div>
                         )}
-                        <div className="steps">
-                            <h3>Workflow progress</h3>
+                        <div className="steps execution-timeline">
+                            <h3>Live timeline & waterfall</h3>
+                            <div className="queue-waterfall"><span style={{ width: waterfallWidth(execution.queueDelayMs, execution.durationMs) }}>Queue {formatDuration(execution.queueDelayMs)}</span><strong>Run {formatDuration(execution.durationMs)}</strong></div>
                             {Object.values(execution.stepResults).map((step, index) => (
                                 <article className="step" key={step.stepId}>
                                     <span className="step-number">{String(index + 1).padStart(2, '0')}</span>
@@ -778,13 +871,11 @@ function ExecutionDrawer(props: {
                                             </div>
                                         )}
                                         {(step.error ?? step.reason) !== undefined && <small className="step-error">{step.error ?? step.reason}</small>}
+                                        {props.canReplay && execution.resumeStepId === null && (execution.status === 'failed' || execution.status === 'cancelled') && step.status === 'failed' && execution.jobDefinition.STEPS.find(item => item.ID === step.stepId)?.REPLAY_SAFE === true && <button className="button button-quiet step-resume" disabled={replayBusy} onClick={() => { setReplayBusy(true); void props.onReplay(execution.executionId, { resumeStepId: step.stepId }).finally(() => setReplayBusy(false)); }}>Resume from this replay-safe step</button>}
                                         {step.output !== undefined && (
                                             <div className="step-output">
                                                 <span>Output</span>
-                                                <pre>{typeof step.output === 'string'
-                                                    ? step.output
-                                                    : JSON.stringify(step.output, null, 2)}
-                                                </pre>
+                                                <JsonExplorer value={step.output} />
                                             </div>
                                         )}
                                     </div>
@@ -794,9 +885,9 @@ function ExecutionDrawer(props: {
                         <details className="execution-payload">
                             <summary>Input and job snapshot</summary>
                             <h4>Execution input</h4>
-                            <pre>{JSON.stringify(execution.input, null, 2)}</pre>
+                            <JsonExplorer value={execution.input} />
                             <h4>Job definition snapshot</h4>
-                            <pre>{JSON.stringify(execution.jobDefinition, null, 2)}</pre>
+                            <JsonExplorer value={execution.jobDefinition} />
                         </details>
                         <div className="webhook-section">
                             <h3>Webhook deliveries</h3>

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseClient, DatabasePool } from '../db/pool.js';
 import { withTransaction } from '../db/pool.js';
 import { AppError } from '../errors.js';
@@ -7,8 +7,10 @@ import type {
     ActorSummary,
     AttentionItem,
     AttentionKind,
+    AttentionSeverity,
     AttentionState,
     AuthenticatedActor,
+    IncidentEvent,
     Job,
     PageResponse
 } from '../types/index.js';
@@ -27,8 +29,15 @@ interface AttentionRow {
     state_changed_by_user_id: string | null;
     state_changed_by_label: string | null;
     state_changed_at: Date | null;
-    resolution_action: 'rerun' | 'webhook_retry' | null;
+    resolution_action: 'rerun' | 'webhook_retry' | 'manual' | null;
     resolution_details: Record<string, unknown> | null;
+    severity: AttentionSeverity;
+    assignee_user_id: string | null;
+    snoozed_until: Date | null;
+    resolution_note: string | null;
+    fingerprint: string;
+    occurrence_count: number;
+    last_occurred_at: Date;
     created_at: Date;
     updated_at: Date;
 }
@@ -64,6 +73,7 @@ export class AttentionRepository {
     constructor(private readonly pool: DatabasePool) {}
 
     async list(options: AttentionListOptions): Promise<PageResponse<AttentionItem>> {
+        await this.expireSnoozes();
         const query = buildListQuery(options);
         const [count, result] = await Promise.all([
             this.pool.query<{ count: string }>(
@@ -72,7 +82,7 @@ export class AttentionRepository {
             ),
             this.pool.query<AttentionRow>(
                 `SELECT * FROM operational_attention_items ${query.where}
-                 ORDER BY occurred_at DESC, id DESC
+                 ORDER BY last_occurred_at DESC, id DESC
                  LIMIT $${query.parameters.length + 1} OFFSET $${query.parameters.length + 2}`,
                 [...query.parameters, options.limit, (options.page - 1) * options.limit]
             )
@@ -88,6 +98,7 @@ export class AttentionRepository {
     }
 
     async getById(attentionId: string): Promise<AttentionItem | undefined> {
+        await this.expireSnoozes();
         const result = await this.pool.query<AttentionRow>(
             'SELECT * FROM operational_attention_items WHERE id = $1',
             [attentionId]
@@ -101,6 +112,83 @@ export class AttentionRepository {
 
     async restore(attentionId: string, actor: AuthenticatedActor): Promise<AttentionItem> {
         return this.changeState(attentionId, 'open', actor);
+    }
+
+    async acknowledge(attentionId: string, actor: AuthenticatedActor): Promise<AttentionItem> {
+        return this.changeState(attentionId, 'acknowledged', actor);
+    }
+
+    async snooze(attentionId: string, until: Date, actor: AuthenticatedActor): Promise<AttentionItem> {
+        if (until <= new Date()) throw new AppError('INVALID_SNOOZE_UNTIL', 'Snooze time must be in the future.', 422);
+        return withTransaction(this.pool, async client => {
+            const item = await lockAttention(client, attentionId);
+            if (item.state === 'resolved') throw new AppError('ATTENTION_ALREADY_RESOLVED', 'Resolved incidents cannot be snoozed.', 409);
+            const result = await client.query<AttentionRow>(
+                `UPDATE operational_attention_items SET state = 'snoozed', snoozed_until = $2,
+                    state_changed_by_type = $3, state_changed_by_user_id = $4, state_changed_by_label = $5,
+                    state_changed_at = clock_timestamp(), resolution_action = NULL, resolution_details = NULL,
+                    updated_at = clock_timestamp() WHERE id = $1 RETURNING *`,
+                [attentionId, until, actorType(actor), actor.userId, actor.email]
+            );
+            await appendIncidentEvent(client, result.rows[0]!, 'snoozed', actor, { until: until.toISOString() });
+            return mapAttention(result.rows[0]!);
+        });
+    }
+
+    async assign(attentionId: string, userId: string | null, actor: AuthenticatedActor): Promise<AttentionItem> {
+        return withTransaction(this.pool, async client => {
+            const item = await lockAttention(client, attentionId);
+            if (userId !== null) {
+                const user = await client.query('SELECT 1 FROM security_users WHERE id = $1 AND status = \'active\'', [userId]);
+                if (user.rows[0] === undefined) throw new AppError('ASSIGNEE_NOT_FOUND', 'Assignee must be an active user.', 422);
+            }
+            const result = await client.query<AttentionRow>(
+                `UPDATE operational_attention_items SET assignee_user_id = $2, updated_at = clock_timestamp()
+                 WHERE id = $1 RETURNING *`, [attentionId, userId]
+            );
+            await appendIncidentEvent(client, result.rows[0]!, 'assigned', actor, { previousUserId: item.assignee_user_id, userId });
+            return mapAttention(result.rows[0]!);
+        });
+    }
+
+    async setSeverity(attentionId: string, severity: AttentionSeverity, actor: AuthenticatedActor): Promise<AttentionItem> {
+        return withTransaction(this.pool, async client => {
+            const item = await lockAttention(client, attentionId);
+            const result = await client.query<AttentionRow>(
+                `UPDATE operational_attention_items SET severity = $2, updated_at = clock_timestamp()
+                 WHERE id = $1 RETURNING *`, [attentionId, severity]
+            );
+            const increased = severityRank(severity) > severityRank(item.severity);
+            await appendIncidentEvent(client, result.rows[0]!, increased ? 'severity_increased' : 'severity_changed', actor,
+                { previousSeverity: item.severity, severity });
+            return mapAttention(result.rows[0]!);
+        });
+    }
+
+    async resolve(attentionId: string, note: string, actor: AuthenticatedActor): Promise<AttentionItem> {
+        return withTransaction(this.pool, async client => {
+            const item = await lockAttention(client, attentionId);
+            if (item.state === 'resolved') return mapAttention(item);
+            const result = await client.query<AttentionRow>(
+                `UPDATE operational_attention_items SET state = 'resolved', resolution_action = 'manual',
+                    resolution_details = jsonb_build_object('note', $2::text), resolution_note = $2,
+                    snoozed_until = NULL, state_changed_by_type = $3, state_changed_by_user_id = $4,
+                    state_changed_by_label = $5, state_changed_at = clock_timestamp(), updated_at = clock_timestamp()
+                 WHERE id = $1 RETURNING *`, [attentionId, note, actorType(actor), actor.userId, actor.email]
+            );
+            await appendIncidentEvent(client, result.rows[0]!, 'resolved', actor, { note });
+            return mapAttention(result.rows[0]!);
+        });
+    }
+
+    async events(attentionId: string): Promise<IncidentEvent[]> {
+        if (await this.getById(attentionId) === undefined) throw new AppError('ATTENTION_NOT_FOUND', `Attention item ${attentionId} was not found.`, 404);
+        const result = await this.pool.query<{ id: string; attention_id: string; event_type: string; actor_type: ActorSummary['type']; actor_user_id: string | null; actor_label: string; details: Record<string, unknown>; created_at: Date }>(
+            'SELECT * FROM incident_events WHERE attention_id = $1 ORDER BY id', [attentionId]
+        );
+        return result.rows.map(row => ({ eventId: row.id, attentionId: row.attention_id, eventType: row.event_type,
+            actor: { type: row.actor_type, userId: row.actor_user_id, label: row.actor_label }, details: row.details,
+            createdAt: row.created_at.toISOString() }));
     }
 
     async rerun(
@@ -194,17 +282,17 @@ export class AttentionRepository {
         const [counts, executionItems, webhookItems] = await Promise.all([
             this.pool.query<{ kind: AttentionKind; count: string }>(
                 `SELECT kind, count(*)::text AS count
-                 FROM operational_attention_items WHERE state = 'open' GROUP BY kind`
+                FROM operational_attention_items WHERE state IN ('open', 'acknowledged') GROUP BY kind`
             ),
             this.pool.query<AttentionRow>(
                 `SELECT * FROM operational_attention_items
-                 WHERE state = 'open' AND kind = 'execution_failure'
-                 ORDER BY occurred_at DESC, id DESC LIMIT 5`
+                 WHERE state IN ('open', 'acknowledged') AND kind = 'execution_failure'
+                 ORDER BY last_occurred_at DESC, id DESC LIMIT 5`
             ),
             this.pool.query<AttentionRow>(
                 `SELECT * FROM operational_attention_items
-                 WHERE state = 'open' AND kind = 'webhook_failure'
-                 ORDER BY occurred_at DESC, id DESC LIMIT 5`
+                 WHERE state IN ('open', 'acknowledged') AND kind = 'webhook_failure'
+                 ORDER BY last_occurred_at DESC, id DESC LIMIT 5`
             )
         ]);
         const byKind = Object.fromEntries(counts.rows.map(row => [row.kind, Number(row.count)]));
@@ -218,7 +306,7 @@ export class AttentionRepository {
 
     private async changeState(
         attentionId: string,
-        target: 'open' | 'ignored',
+        target: 'open' | 'acknowledged' | 'ignored',
         actor: AuthenticatedActor
     ): Promise<AttentionItem> {
         return withTransaction(this.pool, async client => {
@@ -236,11 +324,25 @@ export class AttentionRepository {
                  SET state = $2, state_changed_by_type = $3,
                      state_changed_by_user_id = $4, state_changed_by_label = $5,
                      state_changed_at = clock_timestamp(), resolution_action = NULL,
-                     resolution_details = NULL, updated_at = clock_timestamp()
+                     resolution_details = NULL, resolution_note = NULL, snoozed_until = NULL,
+                     updated_at = clock_timestamp()
                  WHERE id = $1 RETURNING *`,
                 [attentionId, target, actorType(actor), actor.userId, actor.email]
             );
+            await appendIncidentEvent(client, result.rows[0]!, target === 'open' ? 'restored' : target, actor, { previousState: item.state });
             return mapAttention(result.rows[0]!);
+        });
+    }
+
+    private async expireSnoozes(): Promise<void> {
+        await withTransaction(this.pool, async client => {
+            const due = await client.query<AttentionRow>(
+                `UPDATE operational_attention_items SET state = 'open', snoozed_until = NULL,
+                    state_changed_by_type = 'system', state_changed_by_user_id = NULL,
+                    state_changed_by_label = 'system', state_changed_at = clock_timestamp(), updated_at = clock_timestamp()
+                 WHERE state = 'snoozed' AND snoozed_until <= clock_timestamp() RETURNING *`
+            );
+            for (const item of due.rows) await appendIncidentEvent(client, item, 'reopened', undefined, { reason: 'snooze_expired' });
         });
     }
 }
@@ -287,23 +389,46 @@ async function upsertFailure(
         detailSnapshot: Record<string, unknown>;
     }
 ): Promise<void> {
-    await client.query(
-        `INSERT INTO operational_attention_items(
-            id, kind, source_id, execution_id, job_id, reason, detail_snapshot, occurred_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
-         ON CONFLICT (kind, source_id) DO UPDATE
-         SET execution_id = EXCLUDED.execution_id, job_id = EXCLUDED.job_id,
-             reason = EXCLUDED.reason, detail_snapshot = EXCLUDED.detail_snapshot,
-             occurred_at = EXCLUDED.occurred_at, state = 'open',
-             state_changed_by_type = 'system', state_changed_by_user_id = NULL,
-             state_changed_by_label = 'system', state_changed_at = clock_timestamp(),
-             resolution_action = NULL, resolution_details = NULL,
-             updated_at = clock_timestamp()`,
-        [
-            randomUUID(), input.kind, input.sourceId, input.executionId, input.jobId,
-            input.reason, JSON.stringify(input.detailSnapshot), input.occurredAt
-        ]
+    const fingerprint = failureFingerprint(input.kind, input.jobId, input.detailSnapshot);
+    const severity: AttentionSeverity = input.kind === 'execution_failure' ? 'high' : 'medium';
+    const existing = await client.query<AttentionRow>(
+        `SELECT * FROM operational_attention_items
+         WHERE fingerprint = $1 OR (kind = $2 AND source_id = $3)
+         ORDER BY (fingerprint = $1) DESC LIMIT 1 FOR UPDATE`, [fingerprint, input.kind, input.sourceId]
     );
+    if (existing.rows[0] === undefined) {
+        const inserted = await client.query<AttentionRow>(
+            `INSERT INTO operational_attention_items(
+                id, kind, source_id, execution_id, job_id, reason, detail_snapshot, occurred_at,
+                last_occurred_at, fingerprint, severity
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $8, $9, $10) RETURNING *`,
+            [randomUUID(), input.kind, input.sourceId, input.executionId, input.jobId,
+                input.reason, JSON.stringify(input.detailSnapshot), input.occurredAt, fingerprint, severity]
+        );
+        await appendIncidentEvent(client, inserted.rows[0]!, 'opened', undefined, { sourceId: input.sourceId });
+        return;
+    }
+    const previous = existing.rows[0];
+    const reopen = previous.state === 'resolved' || previous.state === 'ignored';
+    const updated = await client.query<AttentionRow>(
+        `UPDATE operational_attention_items SET source_id = $2, execution_id = $3, job_id = $4,
+            reason = $5, detail_snapshot = $6::jsonb, occurred_at = $7, last_occurred_at = $7, fingerprint = $9,
+            occurrence_count = occurrence_count + 1,
+            state = CASE WHEN $8 THEN 'open' ELSE state END,
+            state_changed_by_type = CASE WHEN $8 THEN 'system' ELSE state_changed_by_type END,
+            state_changed_by_user_id = CASE WHEN $8 THEN NULL ELSE state_changed_by_user_id END,
+            state_changed_by_label = CASE WHEN $8 THEN 'system' ELSE state_changed_by_label END,
+            state_changed_at = CASE WHEN $8 THEN clock_timestamp() ELSE state_changed_at END,
+            resolution_action = CASE WHEN $8 THEN NULL ELSE resolution_action END,
+            resolution_details = CASE WHEN $8 THEN NULL ELSE resolution_details END,
+            resolution_note = CASE WHEN $8 THEN NULL ELSE resolution_note END,
+            snoozed_until = CASE WHEN $8 THEN NULL ELSE snoozed_until END,
+            updated_at = clock_timestamp() WHERE id = $1 RETURNING *`,
+        [previous.id, input.sourceId, input.executionId, input.jobId, input.reason,
+            JSON.stringify(input.detailSnapshot), input.occurredAt, reopen, fingerprint]
+    );
+    await appendIncidentEvent(client, updated.rows[0]!, reopen ? 'reopened' : 'occurrence', undefined,
+        { sourceId: input.sourceId, occurrenceCount: updated.rows[0]!.occurrence_count });
 }
 
 async function lockAttention(client: DatabaseClient, attentionId: string): Promise<AttentionRow> {
@@ -325,7 +450,7 @@ function assertRemediable(item: AttentionRow, kind: AttentionKind, action: strin
             409
         );
     }
-    if (item.state !== 'open') {
+    if (item.state !== 'open' && item.state !== 'acknowledged') {
         throw new AppError(
             'ATTENTION_STATE_CONFLICT',
             `Only open attention items can ${action}.`,
@@ -350,6 +475,7 @@ async function updateResolved(
          WHERE id = $1 RETURNING *`,
         [attentionId, actorType(actor), actor.userId, actor.email, action, JSON.stringify(details)]
     );
+    await appendIncidentEvent(client, result.rows[0]!, 'resolved', actor, { action, ...details });
     return mapAttention(result.rows[0]!);
 }
 
@@ -393,6 +519,13 @@ function mapAttention(row: AttentionRow): AttentionItem {
         reason: row.reason,
         detailSnapshot: row.detail_snapshot,
         occurredAt: row.occurred_at.toISOString(),
+        lastOccurredAt: row.last_occurred_at.toISOString(),
+        fingerprint: row.fingerprint,
+        occurrenceCount: row.occurrence_count,
+        severity: row.severity,
+        assigneeUserId: row.assignee_user_id,
+        snoozedUntil: row.snoozed_until?.toISOString() ?? null,
+        resolutionNote: row.resolution_note,
         state: row.state,
         stateChangedBy: changedBy,
         stateChangedAt: row.state_changed_at?.toISOString() ?? null,
@@ -401,4 +534,73 @@ function mapAttention(row: AttentionRow): AttentionItem {
         createdAt: row.created_at.toISOString(),
         updatedAt: row.updated_at.toISOString()
     };
+}
+
+export function failureFingerprint(
+    kind: AttentionKind,
+    jobId: string,
+    details: Record<string, unknown>
+): string {
+    if (kind === 'execution_failure') {
+        const code = typeof details.errorCode === 'string' && details.errorCode.length > 0 ? details.errorCode : 'UNKNOWN';
+        return sha256(`execution_failure:${jobId}:${code}`);
+    }
+    const destination = typeof details.url === 'string' ? sha256(details.url) : 'unknown_destination';
+    const responseStatus = typeof details.responseStatus === 'number' ? details.responseStatus : null;
+    const error = typeof details.lastError === 'string' ? details.lastError.toLowerCase() : '';
+    const category = responseStatus !== null ? `http_${Math.floor(responseStatus / 100)}xx`
+        : error.includes('timeout') || error.includes('aborted') ? 'timeout'
+            : error.includes('dns') || error.includes('enotfound') ? 'dns'
+                : error.includes('network') || error.includes('connect') ? 'network'
+                    : 'delivery_error';
+    return sha256(`webhook_failure:${jobId}:${destination}:${category}`);
+}
+
+async function appendIncidentEvent(
+    client: DatabaseClient,
+    incident: AttentionRow,
+    eventType: string,
+    actor: AuthenticatedActor | undefined,
+    details: Record<string, unknown>
+): Promise<void> {
+    const inserted = await client.query<{ id: string }>(
+        `INSERT INTO incident_events(attention_id, event_type, actor_type, actor_user_id, actor_label, details)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING id`,
+        [incident.id, eventType, actor === undefined ? 'system' : actorType(actor), actor?.userId ?? null,
+            actor?.email ?? 'system', JSON.stringify(details)]
+    );
+    if (!['opened', 'reopened', 'severity_increased', 'resolved'].includes(eventType)) return;
+    const policies = await client.query<{ id: string; channel_id: string }>(
+        `SELECT p.id, p.channel_id FROM notification_policies p
+         JOIN notification_channels c ON c.id = p.channel_id
+         WHERE p.enabled AND c.enabled AND $1 = ANY(p.lifecycle_events) AND $2 = ANY(p.incident_kinds)
+           AND (p.job_ids IS NULL OR $3 = ANY(p.job_ids))
+           AND (CASE $4 WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END) >=
+               (CASE p.minimum_severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END)`,
+        [eventType, incident.kind, incident.job_id, incident.severity]
+    );
+    const payload = {
+        event: `incident.${eventType}`,
+        incident: {
+            attentionId: incident.id, kind: incident.kind, severity: incident.severity,
+            state: incident.state, jobId: incident.job_id, executionId: incident.execution_id,
+            reason: incident.reason, occurrenceCount: incident.occurrence_count,
+            lastOccurredAt: incident.last_occurred_at.toISOString()
+        }
+    };
+    for (const policy of policies.rows) {
+        await client.query(
+            `INSERT INTO notification_deliveries(id, incident_event_id, channel_id, policy_id, payload)
+             VALUES ($1, $2, $3, $4, $5::jsonb) ON CONFLICT DO NOTHING`,
+            [randomUUID(), inserted.rows[0]!.id, policy.channel_id, policy.id, JSON.stringify(payload)]
+        );
+    }
+}
+
+function severityRank(value: AttentionSeverity): number {
+    return { low: 1, medium: 2, high: 3, critical: 4 }[value];
+}
+
+function sha256(value: string): string {
+    return createHash('sha256').update(value, 'utf8').digest('hex');
 }

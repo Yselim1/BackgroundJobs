@@ -25,7 +25,7 @@ import type {
     UserAccessSummary,
     ValidationIssue,
     WebhookDelivery
-    ,WorkerInstance, QueueSummary, AutomationTrigger, AutomationTriggerEvent
+    ,WorkerInstance, QueueSummary, AutomationTrigger, AutomationTriggerEvent, PlatformActivity, QueueDetail, QueuePolicy, ExecutorCatalogItem, IncidentEvent, NotificationChannel, NotificationChannelKind, NotificationDelivery, NotificationLifecycleEvent, NotificationPolicy, AttentionKind, AttentionSeverity
 } from './types';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/u, '') ?? '';
@@ -34,6 +34,10 @@ export const AUTH_EXPIRED_EVENT = 'workline:auth-expired';
 export async function getOverview(): Promise<PlatformOverview> {
     return request('/api/platform/overview');
 }
+
+export async function getActivity(window: '6h' | '24h' | '7d'): Promise<PlatformActivity> { return request('/api/platform/activity?window=' + window); }
+export async function getCommandSearch(query: string): Promise<{ jobs: Array<{ id: string; name: string; status: string }>; executions: Array<{ id: string; job_id: string; status: string }>; incidents: Array<{ id: string; job_id: string; reason: string; severity: string }>; actions: Array<{ id: string; label: string }> }> { return request('/api/platform/search?q=' + encodeURIComponent(query)); }
+export async function readiness(): Promise<boolean> { return fetch(API_BASE + '/health/ready', { credentials: 'include' }).then(response => response.ok).catch(() => false); }
 
 export async function getCurrentUser(): Promise<AuthSession> {
     return request('/api/auth/me');
@@ -184,6 +188,37 @@ export async function rerunAttention(attentionId: string): Promise<AttentionItem
 export async function retryAttentionWebhook(attentionId: string): Promise<AttentionItem> {
     return mutateAttention(attentionId, 'retry-webhook');
 }
+export async function getIncidentEvents(attentionId: string): Promise<IncidentEvent[]> { return (await request<{ items: IncidentEvent[] }>(`/api/attention/${encodeURIComponent(attentionId)}/events`)).items; }
+export function incidentAction(attentionId: string, action: string, body?: unknown): Promise<AttentionItem> { return request(`/api/attention/${encodeURIComponent(attentionId)}/${action}`, { method: 'POST', ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }); }
+export function bulkIncidentAction(attentionIds: string[], action: string, value?: unknown): Promise<{ items: unknown[] }> { return request('/api/attention/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ attentionIds, action, value }) }); }
+export function replayIncident(attentionId: string, options: { resumeStepId?: string } = {}): Promise<{ incident: AttentionItem; execution: ExecutionSummary }> {
+    return request(`/api/attention/${encodeURIComponent(attentionId)}/replay`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options) });
+}
+
+export async function getNotificationChannels(): Promise<NotificationChannel[]> {
+    return (await request<{ items: NotificationChannel[] }>('/api/notifications/channels')).items;
+}
+export function createNotificationChannel(input: { name: string; kind: NotificationChannelKind; endpointSecretName: string; signingSecretName: string | null; enabled: boolean }): Promise<NotificationChannel> {
+    return request('/api/notifications/channels', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+}
+export function updateNotificationChannel(channelId: string, input: Partial<Pick<NotificationChannel, 'name' | 'endpointSecretName' | 'signingSecretName' | 'enabled'>>, version: number): Promise<NotificationChannel> {
+    return request('/api/notifications/channels/' + encodeURIComponent(channelId), { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'If-Match': String(version) }, body: JSON.stringify(input) });
+}
+export async function getNotificationPolicies(): Promise<NotificationPolicy[]> {
+    return (await request<{ items: NotificationPolicy[] }>('/api/notifications/policies')).items;
+}
+export function createNotificationPolicy(input: { name: string; channelId: string; enabled: boolean; incidentKinds: AttentionKind[]; minimumSeverity: AttentionSeverity; jobIds: string[] | null; lifecycleEvents: NotificationLifecycleEvent[] }): Promise<NotificationPolicy> {
+    return request('/api/notifications/policies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+}
+export function updateNotificationPolicy(policyId: string, input: Partial<Pick<NotificationPolicy, 'name' | 'channelId' | 'enabled' | 'incidentKinds' | 'minimumSeverity' | 'jobIds' | 'lifecycleEvents'>>, version: number): Promise<NotificationPolicy> {
+    return request('/api/notifications/policies/' + encodeURIComponent(policyId), { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'If-Match': String(version) }, body: JSON.stringify(input) });
+}
+export async function getNotificationDeliveries(limit = 100): Promise<NotificationDelivery[]> {
+    return (await request<{ items: NotificationDelivery[] }>('/api/notifications/deliveries?limit=' + limit)).items;
+}
+export function retryNotificationDelivery(deliveryId: string): Promise<NotificationDelivery> {
+    return request('/api/notifications/deliveries/' + encodeURIComponent(deliveryId) + '/retry', { method: 'POST' });
+}
 
 function mutateAttention(attentionId: string, action: string): Promise<AttentionItem> {
     return request('/api/attention/' + encodeURIComponent(attentionId) + '/' + action, {
@@ -308,6 +343,7 @@ export async function getExecutors(): Promise<string[]> {
     const result = await request<{ items: string[] }>('/api/platform/executors');
     return result.items;
 }
+export async function getExecutorCatalog(): Promise<ExecutorCatalogItem[]> { return (await request<{ items: ExecutorCatalogItem[] }>('/api/platform/executor-catalog')).items; }
 
 export async function getExecutions(
     filters: ExecutionFilters & { page: number }
@@ -336,13 +372,20 @@ export async function getWebhookDeliveries(executionId: string): Promise<Webhook
     return request('/api/executions/' + encodeURIComponent(executionId) + '/webhooks');
 }
 
-export async function runJob(jobId: string): Promise<{ executionId: string }> {
+export async function validateRunInput(jobId: string, input: Record<string, unknown> | undefined, supplied: boolean): Promise<{ valid: true; input: Record<string, unknown> }> { return request(`/api/jobs/${encodeURIComponent(jobId)}/run/validate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(supplied ? { input } : {}) }); }
+export async function runJob(jobId: string, input?: Record<string, unknown>, idempotencyKey?: string): Promise<{ executionId: string }> {
     return request('/api/jobs/' + encodeURIComponent(jobId) + '/run', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: {} })
+        headers: { 'Content-Type': 'application/json', ...(idempotencyKey === undefined ? {} : { 'Idempotency-Key': idempotencyKey }) },
+        body: JSON.stringify(input === undefined ? {} : { input })
     });
 }
+export function replayExecution(executionId: string, options: { useCurrentDefinition?: boolean; resumeStepId?: string } = {}): Promise<ExecutionSummary> { return request(`/api/executions/${encodeURIComponent(executionId)}/replay`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options) }); }
+export function testJobStep(job: JobDefinition, stepId: string, input?: Record<string, unknown>): Promise<ExecutionSummary> { return request('/api/jobs/test-run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job, stepId, ...(input === undefined ? {} : { input }) }) }); }
+export function previewBackfill(jobId: string, from: string, to: string) { return request<{ jobId: string; occurrences: Array<{ scheduledFor: string; existingExecutionId: string | null }> }>(`/api/jobs/${encodeURIComponent(jobId)}/backfills/preview`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ from, to }) }); }
+export function applyBackfill(jobId: string, from: string, to: string, input?: Record<string, unknown>, idempotencyKey?: string) { return request<{ jobId: string; executions: Array<{ scheduledFor: string; executionId: string; existing: boolean }> }>(`/api/jobs/${encodeURIComponent(jobId)}/backfills`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(idempotencyKey === undefined ? {} : { 'Idempotency-Key': idempotencyKey }) }, body: JSON.stringify({ from, to, ...(input === undefined ? {} : { input }) }) }); }
+export function getQueueDetail(name: string): Promise<QueueDetail> { return request('/api/queues/' + encodeURIComponent(name)); }
+export function updateQueuePolicy(name: string, patch: Partial<{ paused: boolean; maxRunning: number | null; maxStarts: number | null; intervalMs: number | null }>, version: number): Promise<QueuePolicy> { return request('/api/queues/' + encodeURIComponent(name), { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'If-Match': `${version}` }, body: JSON.stringify(patch) }); }
 
 export async function cancelExecution(executionId: string): Promise<void> {
     await request('/api/executions/' + encodeURIComponent(executionId) + '/cancel', { method: 'POST' });

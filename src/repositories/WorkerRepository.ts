@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabasePool } from '../db/pool.js';
 import { AppError } from '../errors.js';
-import type { QueueSummary, WorkerInstance } from '../types/index.js';
+import type { AuthenticatedActor, QueuePolicy, QueueSummary, WorkerInstance } from '../types/index.js';
+import { withTransaction } from '../db/pool.js';
 
 interface WorkerRow {
     id: string;
@@ -16,16 +17,21 @@ interface WorkerRow {
     stale: boolean;
 }
 
+interface QueuePolicyRow { name: string; paused: boolean; max_running: number | null; max_starts: number | null; interval_ms: number | null; version: number; updated_at: Date; }
+
 export class WorkerRepository {
     constructor(readonly pool: DatabasePool, private readonly staleMs = 30_000) {}
     get staleAfterMs(): number { return this.staleMs; }
 
     async register(name: string, queues: string[], concurrency: number): Promise<string> {
         const workerId = randomUUID();
-        await this.pool.query(
-            `INSERT INTO worker_instances(id, name, queues, concurrency) VALUES ($1, $2, $3, $4)`,
-            [workerId, name, queues, concurrency]
-        );
+        await withTransaction(this.pool, async client => {
+            await client.query(
+                `INSERT INTO worker_instances(id, name, queues, concurrency) VALUES ($1, $2, $3, $4)`,
+                [workerId, name, queues, concurrency]
+            );
+            await client.query(`INSERT INTO queue_policies(name) SELECT unnest($1::text[]) ON CONFLICT DO NOTHING`, [queues]);
+        });
         return workerId;
     }
 
@@ -92,17 +98,19 @@ export class WorkerRepository {
     }
 
     async queues(): Promise<QueueSummary[]> {
-        const [executionRows, workers] = await Promise.all([
+        const [executionRows, workers, policies] = await Promise.all([
             this.pool.query<{ name: string; queued: string; running: string }>(
                 `SELECT queue_name AS name,
                     count(*) FILTER (WHERE status = 'queued')::text AS queued,
                     count(*) FILTER (WHERE status = 'running')::text AS running
                  FROM executions WHERE status IN ('queued', 'running') GROUP BY queue_name`
             ),
-            this.list()
+            this.list(),
+            this.pool.query<{ name: string }>('SELECT name FROM queue_policies')
         ]);
         const names = new Set<string>(['default']);
         executionRows.rows.forEach(row => names.add(row.name));
+        policies.rows.forEach(row => names.add(row.name));
         workers.filter(worker => worker.state !== 'offline' && worker.state !== 'stopped')
             .forEach(worker => worker.queues.forEach(queue => names.add(queue)));
         return [...names].sort().map(name => {
@@ -112,4 +120,78 @@ export class WorkerRepository {
                 workers: subscribed.length, capacity: subscribed.reduce((sum, worker) => sum + worker.concurrency, 0) };
         });
     }
+
+    async getQueuePolicy(name: string): Promise<QueuePolicy> {
+        await this.pool.query('INSERT INTO queue_policies(name) VALUES ($1) ON CONFLICT DO NOTHING', [name]);
+        const result = await this.pool.query<QueuePolicyRow>('SELECT * FROM queue_policies WHERE name = $1', [name]);
+        return mapQueuePolicy(result.rows[0]!);
+    }
+
+    async updateQueuePolicy(
+        name: string,
+        patch: { paused?: boolean; maxRunning?: number | null; maxStarts?: number | null; intervalMs?: number | null },
+        expectedVersion: number,
+        actor: AuthenticatedActor
+    ): Promise<QueuePolicy> {
+        return withTransaction(this.pool, async client => {
+            await client.query('INSERT INTO queue_policies(name) VALUES ($1) ON CONFLICT DO NOTHING', [name]);
+            const current = await client.query<QueuePolicyRow>('SELECT * FROM queue_policies WHERE name = $1 FOR UPDATE', [name]);
+            const row = current.rows[0]!;
+            if (row.version !== expectedVersion) {
+                throw new AppError('QUEUE_POLICY_VERSION_CONFLICT', `Queue policy ${name} is at version ${row.version}.`, 409, { currentVersion: row.version });
+            }
+            const next = {
+                paused: patch.paused ?? row.paused,
+                maxRunning: patch.maxRunning === undefined ? row.max_running : patch.maxRunning,
+                maxStarts: patch.maxStarts === undefined ? row.max_starts : patch.maxStarts,
+                intervalMs: patch.intervalMs === undefined ? row.interval_ms : patch.intervalMs
+            };
+            if ((next.maxStarts === null) !== (next.intervalMs === null)) {
+                throw new AppError('INVALID_QUEUE_RATE_POLICY', 'maxStarts and intervalMs must both be set or both be null.', 422);
+            }
+            const updated = await client.query<QueuePolicyRow>(
+                `UPDATE queue_policies SET paused = $2, max_running = $3, max_starts = $4, interval_ms = $5,
+                    version = version + 1, updated_by_user_id = $6, updated_at = clock_timestamp()
+                 WHERE name = $1 RETURNING *`,
+                [name, next.paused, next.maxRunning, next.maxStarts, next.intervalMs, actor.userId]
+            );
+            return mapQueuePolicy(updated.rows[0]!);
+        });
+    }
+
+    async queueDetail(name: string): Promise<Record<string, unknown>> {
+        const [summaries, policy, subscribed, oldest, jobs, executions] = await Promise.all([
+            this.queues(), this.getQueuePolicy(name), this.list(),
+            this.pool.query<{ requested_at: Date | null }>(
+                `SELECT min(requested_at) AS requested_at FROM executions WHERE queue_name = $1 AND status = 'queued'`, [name]
+            ),
+            this.pool.query<{ id: string; name: string }>(
+                `SELECT id, definition->>'name' AS name FROM jobs WHERE coalesce(definition->>'QUEUE', 'default') = $1 ORDER BY id`, [name]
+            ),
+            this.pool.query<{ id: string; job_id: string; status: string; trigger_type: string; requested_at: Date; started_at: Date | null; finished_at: Date | null }>(
+                `SELECT id, job_id, status, trigger_type, requested_at, started_at, finished_at
+                 FROM executions WHERE queue_name = $1 ORDER BY requested_at DESC LIMIT 25`, [name]
+            )
+        ]);
+        const summary = summaries.find(item => item.name === name) ?? { name, queued: 0, running: 0, workers: 0, capacity: 0 };
+        const oldestAt = oldest.rows[0]?.requested_at ?? null;
+        return {
+            ...summary, policy,
+            saturation: policy.maxRunning === null ? null : summary.running / policy.maxRunning,
+            oldestQueuedAt: oldestAt?.toISOString() ?? null,
+            oldestQueuedAgeMs: oldestAt === null ? null : Math.max(0, Date.now() - oldestAt.getTime()),
+            subscribedWorkers: subscribed.filter(worker => worker.queues.includes(name)),
+            affectedJobs: jobs.rows,
+            recentExecutions: executions.rows.map(row => ({
+                executionId: row.id, jobId: row.job_id, status: row.status, trigger: row.trigger_type,
+                requestedAt: row.requested_at.toISOString(), startedAt: row.started_at?.toISOString() ?? null,
+                finishedAt: row.finished_at?.toISOString() ?? null
+            }))
+        };
+    }
+}
+
+function mapQueuePolicy(row: QueuePolicyRow): QueuePolicy {
+    return { name: row.name, paused: row.paused, maxRunning: row.max_running, maxStarts: row.max_starts,
+        intervalMs: row.interval_ms, version: row.version, updatedAt: row.updated_at.toISOString() };
 }

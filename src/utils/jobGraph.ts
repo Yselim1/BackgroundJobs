@@ -143,3 +143,53 @@ export function buildDependencyLevels(nodes: readonly DependencyNode[]): string[
 
     return levels;
 }
+
+export function dependencyClosure(nodes: readonly DependencyNode[], selectedId: string): Set<string> {
+    const byId = new Map(nodes.map(node => [node.id, node]));
+    if (!byId.has(selectedId)) return new Set();
+    const closure = new Set<string>();
+    const visit = (id: string): void => {
+        if (closure.has(id)) return;
+        closure.add(id);
+        for (const dependency of byId.get(id)?.dependsOn ?? []) visit(dependency);
+    };
+    visit(selectedId);
+    return closure;
+}
+
+export function dependentClosure(nodes: readonly DependencyNode[], selectedId: string): Set<string> {
+    const dependents = new Map<string, string[]>();
+    for (const node of nodes) {
+        dependents.set(node.id, dependents.get(node.id) ?? []);
+        for (const dependency of node.dependsOn) {
+            const list = dependents.get(dependency) ?? [];
+            list.push(node.id);
+            dependents.set(dependency, list);
+        }
+    }
+    if (!dependents.has(selectedId)) return new Set();
+    const closure = new Set<string>();
+    const visit = (id: string): void => {
+        if (closure.has(id)) return;
+        closure.add(id);
+        for (const dependent of dependents.get(id) ?? []) visit(dependent);
+    };
+    visit(selectedId);
+    return closure;
+}
+
+export function canConnectDependency(
+    nodes: readonly DependencyNode[],
+    sourceId: string,
+    targetId: string
+): { valid: true; nodes: DependencyNode[] } | { valid: false; reason: 'self' | 'duplicate' | 'cycle' | 'missing' } {
+    if (sourceId === targetId) return { valid: false, reason: 'self' };
+    const target = nodes.find(node => node.id === targetId);
+    if (target === undefined || !nodes.some(node => node.id === sourceId)) return { valid: false, reason: 'missing' };
+    if (target.dependsOn.includes(sourceId)) return { valid: false, reason: 'duplicate' };
+    const updated = nodes.map(node => node.id === targetId
+        ? { ...node, dependsOn: [...node.dependsOn, sourceId] }
+        : { ...node, dependsOn: [...node.dependsOn] });
+    if (findDependencyCycle(updated) !== undefined) return { valid: false, reason: 'cycle' };
+    return { valid: true, nodes: updated };
+}

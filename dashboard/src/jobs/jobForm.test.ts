@@ -64,4 +64,28 @@ describe('job editor forms', () => {
         form.advanced = '{broken';
         expect(() => buildJobDefinition(form)).toThrow(JobFormError);
     });
+
+    it('round-trips input schemas, defaults, run policies, and replay safety', () => {
+        const form = createJobForm();
+        form.id = 'policy-job';
+        form.name = 'Policy job';
+        form.inputSchema = JSON.stringify({ type: 'object', required: ['tenant'], properties: { tenant: { type: 'string' } } });
+        form.defaultInput = JSON.stringify({ tenant: 'primary' });
+        form.maxRunning = '4';
+        form.concurrencyKey = 'input.tenant';
+        form.scheduledOverlap = 'cancel_oldest';
+        form.triggeredOverlap = 'skip';
+        form.steps[0]!.id = 'safe';
+        form.steps[0]!.name = 'Safe';
+        form.steps[0]!.replaySafe = true;
+        const definition = buildJobDefinition(form);
+        expect(definition.INPUT_SCHEMA).toMatchObject({ type: 'object' });
+        expect(definition.DEFAULT_INPUT).toEqual({ tenant: 'primary' });
+        expect(definition.RUN_POLICY).toEqual({
+            MAX_RUNNING: 4,
+            KEY: 'input.tenant',
+            OVERLAP: { SCHEDULED: 'cancel_oldest', TRIGGERED: 'skip' }
+        });
+        expect(definition.STEPS[0]?.REPLAY_SAFE).toBe(true);
+    });
 });

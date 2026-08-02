@@ -3,10 +3,11 @@ import type { Job, JobDefinition, JobStep } from '../types';
 const JOB_FIELDS = new Set([
     'id', 'name', 'description', 'status', 'schedule', 'timezone', 'TIMEOUT_MS',
     'MAX_CONCURRENCY', 'FAILURE_POLICY', 'DEFAULT_STEP_RETRY', 'QUEUE', 'PRIORITY', 'STEPS',
+    'INPUT_SCHEMA', 'DEFAULT_INPUT', 'RUN_POLICY',
     'version', 'last_run', 'next_run', 'created_at', 'updated_at'
 ]);
 const STEP_FIELDS = new Set([
-    'ORDER', 'ID', 'NAME', 'TYPE', 'DEPENDS_ON', 'STEP_PARAMS'
+    'ORDER', 'ID', 'NAME', 'TYPE', 'DEPENDS_ON', 'STEP_PARAMS', 'REPLAY_SAFE'
 ]);
 
 export interface StepForm {
@@ -17,6 +18,7 @@ export interface StepForm {
     dependencies: string;
     params: string;
     advanced: string;
+    replaySafe: boolean;
 }
 
 export interface JobForm {
@@ -35,6 +37,12 @@ export interface JobForm {
     retryDelayMs: string;
     retryBackoff: 'fixed' | 'exponential';
     advanced: string;
+    inputSchema: string;
+    defaultInput: string;
+    maxRunning: string;
+    concurrencyKey: string;
+    scheduledOverlap: 'skip' | 'queue' | 'cancel_oldest';
+    triggeredOverlap: 'skip' | 'queue' | 'cancel_oldest';
     steps: StepForm[];
 }
 
@@ -55,7 +63,8 @@ export function createStepForm(type = 'SCRIPT'): StepForm {
         type,
         dependencies: '',
         params: JSON.stringify(defaultParams(type), null, 2),
-        advanced: '{}'
+        advanced: '{}',
+        replaySafe: false
     };
 }
 
@@ -77,6 +86,12 @@ export function createJobForm(job?: Job): JobForm {
             retryDelayMs: '',
             retryBackoff: 'fixed',
             advanced: '{}',
+            inputSchema: '',
+            defaultInput: '',
+            maxRunning: '1',
+            concurrencyKey: '',
+            scheduledOverlap: 'skip',
+            triggeredOverlap: 'queue',
             steps: [createStepForm()]
         };
     }
@@ -100,6 +115,12 @@ export function createJobForm(job?: Job): JobForm {
         retryDelayMs: job.DEFAULT_STEP_RETRY?.DELAY_MS?.toString() ?? '',
         retryBackoff: job.DEFAULT_STEP_RETRY?.BACKOFF ?? 'fixed',
         advanced: JSON.stringify(jobAdvanced, null, 2),
+        inputSchema: job.INPUT_SCHEMA === undefined ? '' : JSON.stringify(job.INPUT_SCHEMA, null, 2),
+        defaultInput: job.DEFAULT_INPUT === undefined ? '' : JSON.stringify(job.DEFAULT_INPUT, null, 2),
+        maxRunning: String(job.RUN_POLICY?.MAX_RUNNING ?? 1),
+        concurrencyKey: job.RUN_POLICY?.KEY ?? '',
+        scheduledOverlap: job.RUN_POLICY?.OVERLAP?.SCHEDULED ?? 'skip',
+        triggeredOverlap: job.RUN_POLICY?.OVERLAP?.TRIGGERED ?? 'queue',
         steps: job.STEPS.map(step => ({
             key: 'step-' + nextStepKey++,
             id: step.ID,
@@ -107,6 +128,7 @@ export function createJobForm(job?: Job): JobForm {
             type: step.TYPE,
             dependencies: step.DEPENDS_ON?.join(', ') ?? '',
             params: JSON.stringify(step.STEP_PARAMS, null, 2),
+            replaySafe: step.REPLAY_SAFE ?? false,
             advanced: JSON.stringify(
                 Object.fromEntries(Object.entries(step).filter(([key]) => !STEP_FIELDS.has(key))),
                 null,
@@ -124,6 +146,9 @@ export function buildJobDefinition(form: JobForm): JobDefinition {
     const retryMaxAttempts = optionalPositiveInteger(form.retryMaxAttempts, 'DEFAULT_STEP_RETRY.MAX_ATTEMPTS');
     const retryDelayMs = optionalNonNegativeInteger(form.retryDelayMs, 'DEFAULT_STEP_RETRY.DELAY_MS');
     const hasRetry = retryMaxAttempts !== undefined || retryDelayMs !== undefined;
+    const maxRunning = optionalPositiveInteger(form.maxRunning, 'RUN_POLICY.MAX_RUNNING') ?? 1;
+    const inputSchema = form.inputSchema.trim().length === 0 ? undefined : parseObject(form.inputSchema, 'INPUT_SCHEMA');
+    const defaultInput = form.defaultInput.trim().length === 0 ? undefined : parseObject(form.defaultInput, 'DEFAULT_INPUT');
 
     return {
         ...advanced,
@@ -138,6 +163,15 @@ export function buildJobDefinition(form: JobForm): JobDefinition {
         ...(timeoutMs === undefined ? {} : { TIMEOUT_MS: timeoutMs }),
         ...(maxConcurrency === undefined ? {} : { MAX_CONCURRENCY: maxConcurrency }),
         FAILURE_POLICY: form.failurePolicy,
+        ...(inputSchema === undefined ? {} : { INPUT_SCHEMA: inputSchema }),
+        ...(defaultInput === undefined ? {} : { DEFAULT_INPUT: defaultInput }),
+        ...((maxRunning === 1 && form.concurrencyKey.trim().length === 0 && form.scheduledOverlap === 'skip' && form.triggeredOverlap === 'queue') ? {} : {
+            RUN_POLICY: {
+                MAX_RUNNING: maxRunning,
+                ...(form.concurrencyKey.trim().length === 0 ? {} : { KEY: form.concurrencyKey.trim() }),
+                OVERLAP: { SCHEDULED: form.scheduledOverlap, TRIGGERED: form.triggeredOverlap }
+            }
+        }),
         ...(hasRetry ? {
             DEFAULT_STEP_RETRY: {
                 ...(retryMaxAttempts === undefined ? {} : { MAX_ATTEMPTS: retryMaxAttempts }),
@@ -185,6 +219,7 @@ function buildStep(form: StepForm, index: number): JobStep {
         ID: form.id,
         NAME: form.name,
         TYPE: form.type,
+        ...(form.replaySafe ? { REPLAY_SAFE: true } : {}),
         ...(dependencies.length === 0 ? {} : { DEPENDS_ON: dependencies }),
         STEP_PARAMS: parseObject(form.params, `STEPS[${index}].STEP_PARAMS`)
     };
@@ -230,7 +265,7 @@ function defaultParams(type: string): Record<string, unknown> {
         case 'COMMAND':
             return { COMMAND: 'echo hello', TIMEOUT_MS: 10000 };
         case 'PYTHON':
-            return { CODE: 'import json\nprint(json.dumps({\ok\: True}))', TIMEOUT_MS: 10000 };
+            return { CODE: 'import json\nprint(json.dumps({"ok": True}))', TIMEOUT_MS: 10000 };
         default:
             return { CODE: `() => ({ message: 'Hello from Workline' })` };
     }

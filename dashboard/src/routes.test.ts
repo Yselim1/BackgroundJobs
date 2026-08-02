@@ -4,6 +4,7 @@ import { parseDashboardRoute, setRouteQuery } from './routes';
 describe('dashboard routes', () => {
     it('parses job and execution deep links', () => {
         expect(parseDashboardRoute('/jobs/nightly%20report')).toEqual({ page: 'job-detail', jobId: 'nightly report' });
+        expect(parseDashboardRoute('/jobs', '?view=automations')).toEqual({ page: 'automations' });
         expect(parseDashboardRoute('/logs/exec-1')).toEqual({ page: 'logs', executionId: 'exec-1' });
         expect(parseDashboardRoute('/audit')).toEqual({ page: 'audit' });
         expect(parseDashboardRoute('/attention')).toEqual({ page: 'attention' });

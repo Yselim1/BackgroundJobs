@@ -2,6 +2,8 @@
 
 A Node.js 24+ and TypeScript background-job service with PostgreSQL-backed definitions, durable execution history and progress events, six-field cron scheduling, a transactional work queue, bounded concurrency, retries, cancellation, job deadlines, runtime input, and reliable terminal webhooks.
 
+The Run/Investigation, Operations Shell, Workflow Authoring, Queue/Backfill, and Incident/Notification expansion is documented in [docs/product-expansion.md](docs/product-expansion.md), including API additions, rollout checks, and rollback guidance.
+
 PostgreSQL is the source of truth. No job or execution exists only in process memory, and the reference file in `examples/jobs.json` is never imported at runtime.
 
 ## Start locally
@@ -27,6 +29,14 @@ npm run dev:server
 ```
 
 Bootstrap refuses to run after the first user exists. Subsequent local starts need only `npm run dev`.
+
+To add safe examples for managed secrets, notifications, and job automations to an initialized local database, run:
+
+```powershell
+npm run examples:seed
+```
+
+The command is idempotent and creates its notification channel, notification policy, job-completion automation, and inbound webhook trigger disabled. Its example Slack webhook uses the non-routable `example.invalid` domain.
 
 The default connection is `postgres://postgres:postgres@localhost:5432/backgroundjobs`; copy `.env.example` to `.env` when different values are needed. Development scripts load the ignored root `.env` automatically.
 

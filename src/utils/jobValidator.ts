@@ -3,6 +3,7 @@ import type{Job, JobValidationResult, ValidationIssue, WorkflowConditionOperator
 import {findDependencyCycle, type DependencyNode} from './jobGraph.js';
 import { assertValidCron, assertValidTimezone } from './cron.js';
 import { getWorkflowPathRoot, isValidWorkflowPath } from './workflowExpressions.js';
+import { defaultInputIssues, validateInputSchema } from './inputSchema.js';
 const HTTP_METHODS = new Set([
     'GET',
     'POST',
@@ -79,6 +80,12 @@ export function validateJobDefinition(input: unknown): JobValidationResult {
     validateJobStatus(normalizedInput.status, errors);
     validateSchedule(normalizedInput.schedule, normalizedInput.timezone, errors);
     validateExecutionSettings(normalizedInput, errors);
+    if (normalizedInput.INPUT_SCHEMA !== undefined) errors.push(...validateInputSchema(normalizedInput.INPUT_SCHEMA));
+    if (normalizedInput.DEFAULT_INPUT !== undefined && !isRecord(normalizedInput.DEFAULT_INPUT)) {
+        addIssue(errors, 'DEFAULT_INPUT', 'INVALID_DEFAULT_INPUT', 'DEFAULT_INPUT must be a JSON object.');
+    } else {
+        errors.push(...defaultInputIssues(normalizedInput as Pick<Job, 'INPUT_SCHEMA' | 'DEFAULT_INPUT'>));
+    }
     validateSecretTemplates(normalizedInput, '$', errors);
 
     const rawSteps = normalizedInput.STEPS;
@@ -141,6 +148,10 @@ export function validateJobDefinition(input: unknown): JobValidationResult {
 
         if(rawStep.FAIL_JOB_ON_FAILURE !== undefined && typeof rawStep.FAIL_JOB_ON_FAILURE !== 'boolean'){
             addIssue(errors, `${stepPath}.FAIL_JOB_ON_FAILURE`, 'INVALID_FAIL_JOB_ON_FAILURE', 'FAIL_JOB_ON_FAILURE must be a boolean.');
+        }
+
+        if (rawStep.REPLAY_SAFE !== undefined && typeof rawStep.REPLAY_SAFE !== 'boolean') {
+            addIssue(errors, `${stepPath}.REPLAY_SAFE`, 'INVALID_REPLAY_SAFE', 'REPLAY_SAFE must be a boolean.');
         }
 
         validateRetryPolicy(rawStep.RETRY, `${stepPath}.RETRY`, errors);
@@ -384,7 +395,40 @@ function validateExecutionSettings(job: Record<string, unknown>, errors: Validat
     }
 
     validateRetryPolicy(job.DEFAULT_STEP_RETRY, 'DEFAULT_STEP_RETRY', errors);
+    validateRunPolicy(job.RUN_POLICY, errors);
     validateWebhooks(job.WEBHOOKS, errors);
+}
+
+function validateRunPolicy(value: unknown, errors: ValidationIssue[]): void {
+    if (value === undefined) return;
+    if (!isRecord(value)) {
+        addIssue(errors, 'RUN_POLICY', 'INVALID_RUN_POLICY', 'RUN_POLICY must be an object.');
+        return;
+    }
+    const unsupported = Object.keys(value).filter(key => !['MAX_RUNNING', 'KEY', 'OVERLAP'].includes(key));
+    if (unsupported.length > 0) addIssue(errors, `RUN_POLICY.${unsupported[0]}`, 'INVALID_RUN_POLICY_FIELD', 'Unsupported RUN_POLICY field.');
+    if (value.MAX_RUNNING !== undefined &&
+        (typeof value.MAX_RUNNING !== 'number' || !Number.isInteger(value.MAX_RUNNING) || value.MAX_RUNNING < 1 || value.MAX_RUNNING > 1000)) {
+        addIssue(errors, 'RUN_POLICY.MAX_RUNNING', 'INVALID_MAX_RUNNING', 'MAX_RUNNING must be an integer between 1 and 1000.');
+    }
+    if (value.KEY !== undefined &&
+        (typeof value.KEY !== 'string' || !isValidWorkflowPath(value.KEY) || getWorkflowPathRoot(value.KEY) !== 'input')) {
+        addIssue(errors, 'RUN_POLICY.KEY', 'INVALID_CONCURRENCY_KEY', 'KEY must be a safe scalar path rooted at input.');
+    }
+    if (value.OVERLAP !== undefined) {
+        if (!isRecord(value.OVERLAP)) {
+            addIssue(errors, 'RUN_POLICY.OVERLAP', 'INVALID_OVERLAP_POLICY', 'OVERLAP must be an object.');
+        } else {
+            const unsupportedOverlap = Object.keys(value.OVERLAP).filter(key => key !== 'SCHEDULED' && key !== 'TRIGGERED');
+            if (unsupportedOverlap.length > 0) addIssue(errors, `RUN_POLICY.OVERLAP.${unsupportedOverlap[0]}`, 'INVALID_OVERLAP_FIELD', 'Unsupported OVERLAP field.');
+            for (const field of ['SCHEDULED', 'TRIGGERED'] as const) {
+                const mode = value.OVERLAP[field];
+                if (mode !== undefined && mode !== 'skip' && mode !== 'queue' && mode !== 'cancel_oldest') {
+                    addIssue(errors, `RUN_POLICY.OVERLAP.${field}`, 'INVALID_OVERLAP_MODE', 'Overlap mode must be skip, queue, or cancel_oldest.');
+                }
+            }
+        }
+    }
 }
 
 function validateWebhooks(value: unknown, errors: ValidationIssue[]): void {

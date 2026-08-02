@@ -1,6 +1,6 @@
 import type { AttentionFilters, AttentionKind, AttentionState } from '../types';
 
-const STATES = new Set<AttentionState>(['open', 'ignored', 'resolved']);
+const STATES = new Set<AttentionState>(['open', 'acknowledged', 'snoozed', 'ignored', 'resolved']);
 const KINDS = new Set<AttentionKind>(['execution_failure', 'webhook_failure']);
 const LIMITS = new Set([25, 50, 100]);
 

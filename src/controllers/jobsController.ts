@@ -3,6 +3,7 @@ import { AppError } from '../errors.js';
 import { JobService } from '../services/JobService.js';
 import { requirePermission } from '../security/middleware.js';
 import type { JobStatus } from '../types/index.js';
+import { parseIdempotencyKey } from '../utils/idempotency.js';
 
 export function createJobsController(jobService: JobService): Router {
     const router = Router();
@@ -14,6 +15,11 @@ export function createJobsController(jobService: JobService): Router {
     });
     router.post('/schedule-preview', requirePermission('jobs:write'), route(async (req, res) => {
         res.status(200).json(await jobService.previewSchedule(req.body));
+    }));
+    router.post('/test-run', requirePermission('jobs:write'), route(async (req, res) => {
+        const request = parseTestRun(req.body);
+        const execution = await jobService.testRun(request.job, request.stepId, request.input, request.inputProvided, req.auth!);
+        res.status(202).location(`/api/executions/${execution.executionId}`).json(execution);
     }));
     router.post('/bulk-status', requirePermission('jobs:write'), route(async (req, res) => {
         const input = parseBulkStatus(req.body);
@@ -35,6 +41,22 @@ export function createJobsController(jobService: JobService): Router {
         const job = await jobService.rollbackJob(req.params.id as string, body.targetVersion, body.expectedVersion, req.auth);
         res.setHeader('ETag', `"${job.version}"`).status(200).json(job);
     }));
+    router.post('/:id/run/validate', requirePermission('jobs:run'), route(async (req, res) => {
+        const request = parseRunInput(req.body);
+        res.status(200).json(await jobService.validateRunInput(req.params.id as string, request.input, request.inputProvided));
+    }));
+    router.post('/:id/backfills/preview', requirePermission('jobs:run'), route(async (req, res) => {
+        const range = parseBackfill(req.body, false);
+        res.status(200).json(await jobService.previewBackfill(req.params.id as string, range.from, range.to));
+    }));
+    router.post('/:id/backfills', requirePermission('jobs:run'), route(async (req, res) => {
+        const request = parseBackfill(req.body, true);
+        const result = await jobService.applyBackfill(
+            req.params.id as string, request.from, request.to, request.input, request.inputProvided,
+            req.auth!, parseIdempotencyKey(req.get('Idempotency-Key'))
+        );
+        res.status(202).json(result);
+    }));
     router.get('/:id/plan', requirePermission('jobs:read'), route(async (req, res) => { res.status(200).json(await jobService.getExecutionPlan(req.params.id as string)); }));
     router.get('/:id', requirePermission('jobs:read'), route(async (req, res) => {
         const job = await jobService.getJobWithID(req.params.id as string);
@@ -46,13 +68,17 @@ export function createJobsController(jobService: JobService): Router {
     }));
     router.delete('/:id', requirePermission('jobs:write'), route(async (req, res) => { await jobService.deleteJob(req.params.id as string); res.status(204).send(); }));
     router.post('/:id/run', requirePermission('jobs:run'), route(async (req, res) => {
-        const execution = await jobService.startJob(req.params.id as string, parseRunInput(req.body), req.auth);
+        const request = parseRunInput(req.body);
+        const execution = await jobService.startJob(
+            req.params.id as string, request.input, req.auth,
+            parseIdempotencyKey(req.get('Idempotency-Key')), request.inputProvided
+        );
         res.status(202).location(`/api/executions/${execution.executionId}`).json({
             executionId: execution.executionId,
             logId: execution.executionId,
             jobId: execution.jobId,
-            trigger: 'manual',
-            status: 'queued',
+            trigger: execution.trigger,
+            status: execution.status,
             requestedAt: execution.requestedAt
         });
     }));
@@ -86,8 +112,8 @@ function parseBulkStatus(body: unknown): { jobIds: string[]; status: JobStatus }
     return { jobIds, status: record.status };
 }
 
-function parseRunInput(body: unknown): unknown {
-    if (body === undefined) return undefined;
+function parseRunInput(body: unknown): { input: unknown; inputProvided: boolean } {
+    if (body === undefined) return { input: undefined, inputProvided: false };
     if (body === null || typeof body !== 'object' || Array.isArray(body)) {
         throw new AppError('INVALID_RUN_REQUEST', 'Request body must be an object containing an optional input object.', 422);
     }
@@ -96,7 +122,41 @@ function parseRunInput(body: unknown): unknown {
     if (unsupported.length > 0) {
         throw new AppError('INVALID_RUN_REQUEST', `Unsupported run request field: ${unsupported[0]}.`, 422);
     }
-    return record.input;
+    return { input: record.input, inputProvided: Object.hasOwn(record, 'input') };
+}
+
+function parseTestRun(body: unknown): { job: unknown; stepId: string; input: unknown; inputProvided: boolean } {
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+        throw new AppError('INVALID_TEST_RUN', 'Request body must be an object.', 422);
+    }
+    const record = body as Record<string, unknown>;
+    const unsupported = Object.keys(record).filter(key => !['job', 'stepId', 'input'].includes(key));
+    if (unsupported.length > 0) throw new AppError('INVALID_TEST_RUN', `Unsupported test-run field: ${unsupported[0]}.`, 422);
+    if (typeof record.stepId !== 'string' || record.stepId.trim().length === 0) {
+        throw new AppError('INVALID_TEST_RUN', 'stepId must be a non-empty string.', 422);
+    }
+    return { job: record.job, stepId: record.stepId.trim(), input: record.input, inputProvided: Object.hasOwn(record, 'input') };
+}
+
+function parseBackfill(body: unknown, allowInput: boolean): { from: Date; to: Date; input: unknown; inputProvided: boolean } {
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+        throw new AppError('INVALID_BACKFILL', 'Request body must be an object.', 422);
+    }
+    const record = body as Record<string, unknown>;
+    const allowed = allowInput ? ['from', 'to', 'input'] : ['from', 'to'];
+    const unsupported = Object.keys(record).filter(key => !allowed.includes(key));
+    if (unsupported.length > 0) throw new AppError('INVALID_BACKFILL', `Unsupported backfill field: ${unsupported[0]}.`, 422);
+    const from = parseIsoDate(record.from, 'from');
+    const to = parseIsoDate(record.to, 'to');
+    if (from >= to) throw new AppError('INVALID_BACKFILL_RANGE', 'from must be earlier than to.', 422);
+    return { from, to, input: record.input, inputProvided: allowInput && Object.hasOwn(record, 'input') };
+}
+
+function parseIsoDate(value: unknown, name: string): Date {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T/u.test(value) || Number.isNaN(Date.parse(value))) {
+        throw new AppError('INVALID_BACKFILL_RANGE', `${name} must be an ISO-8601 timestamp.`, 422);
+    }
+    return new Date(value);
 }
 
 function parseIfMatch(value: string | undefined): number {
