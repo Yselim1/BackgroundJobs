@@ -1620,6 +1620,22 @@ describe('Security and authentication lifecycle', () => {
         expect((await executions.claimOldestQueued(workerId, ['alpha'], 20_000))?.executionId).toBe(repeatedHigh.executionId);
         expect((await workers.setDesiredState(workerId, 'draining')).desiredState).toBe('draining');
         expect((await workers.setDesiredState(workerId, 'accepting')).desiredState).toBe('accepting');
+        const retiredWorkerId = await workers.register('retired-alpha', ['alpha'], 1);
+        await pool.query(
+            `UPDATE worker_instances SET last_heartbeat_at = clock_timestamp() - interval '10 days'
+             WHERE id = $1`,
+            [retiredWorkerId]
+        );
+        const detail = await workers.queueDetail('alpha') as { subscribedWorkers: Array<{ workerId: string }> };
+        expect(detail.subscribedWorkers.map(worker => worker.workerId)).toEqual([workerId]);
+        await pool.query(
+            `UPDATE worker_instances SET last_heartbeat_at = clock_timestamp() - interval '10 days'
+             WHERE id = $1`,
+            [workerId]
+        );
+        const cutoff = new Date(Date.now() - 9 * 24 * 60 * 60 * 1_000);
+        expect(await workers.countRetiredBefore(cutoff)).toBe(1);
+        expect(await workers.deleteRetiredBefore(cutoff, 10)).toEqual([retiredWorkerId]);
     });
 
     it('authenticates idempotent webhooks and durably chains terminal job output without cycles', async () => {

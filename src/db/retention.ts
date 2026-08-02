@@ -1,5 +1,6 @@
 import { loadConfig } from '../config.js';
 import { ExecutionRepository } from '../repositories/ExecutionRepository.js';
+import { WorkerRepository } from '../repositories/WorkerRepository.js';
 import { assertSchemaCurrent } from './migrations.js';
 import { createPool } from './pool.js';
 
@@ -13,18 +14,30 @@ try {
     await assertSchemaCurrent(pool);
     const cutoff = new Date(Date.now() - options.days * 24 * 60 * 60 * 1_000);
     const executions = new ExecutionRepository(pool);
+    const workers = new WorkerRepository(pool, config.workerStaleMs);
     if (!options.confirm) {
-        const count = await executions.countTerminalBefore(cutoff);
-        console.log(`Dry run: ${count} terminal execution(s) finished before ${cutoff.toISOString()} would be deleted.`);
+        const [executionCount, workerCount] = await Promise.all([
+            executions.countTerminalBefore(cutoff),
+            workers.countRetiredBefore(cutoff)
+        ]);
+        console.log(`Dry run: ${executionCount} terminal execution(s) finished before ${cutoff.toISOString()} would be deleted.`);
+        console.log(`Dry run: ${workerCount} inactive worker registration(s) last seen before ${cutoff.toISOString()} would be deleted.`);
         console.log('Run again with --confirm to delete them.');
     } else {
-        let deleted = 0;
+        let deletedExecutions = 0;
         while (true) {
             const ids = await executions.deleteTerminalBefore(cutoff, options.batchSize, false);
-            deleted += ids.length;
+            deletedExecutions += ids.length;
             if (ids.length < options.batchSize) break;
         }
-        console.log(`Deleted ${deleted} terminal execution(s) finished before ${cutoff.toISOString()}.`);
+        let deletedWorkers = 0;
+        while (true) {
+            const ids = await workers.deleteRetiredBefore(cutoff, options.batchSize);
+            deletedWorkers += ids.length;
+            if (ids.length < options.batchSize) break;
+        }
+        console.log(`Deleted ${deletedExecutions} terminal execution(s) finished before ${cutoff.toISOString()}.`);
+        console.log(`Deleted ${deletedWorkers} inactive worker registration(s) last seen before ${cutoff.toISOString()}.`);
     }
 } catch (error: unknown) {
     console.error(error instanceof Error ? error.message : String(error));

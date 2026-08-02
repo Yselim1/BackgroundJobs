@@ -333,14 +333,14 @@ Production startup fails unless secure cookies and an explicit `CORS_ALLOWED_ORI
 
 ## History retention
 
-Retention is an explicit operator action and only selects terminal executions. It is a dry run unless --confirm is present; queued and running work is never deleted.
+Retention is an explicit operator action. It selects terminal executions and inactive worker registrations whose last heartbeat is older than the cutoff. It is a dry run unless --confirm is present; queued and running work and any worker that owns a running execution are never deleted.
 
 ~~~bash
 npm run retention -- --days 90
 npm run retention -- --days 90 --batch-size 500 --confirm
 ~~~
 
-Associated steps, attempts, progress events, and webhook deliveries are removed in the same database cascade.
+Associated steps, attempts, progress events, and webhook deliveries are removed in the same database cascade. Historical worker references on retained terminal executions are cleared when an old registration is removed.
 
 ## Conditional and fan-out workflows
 

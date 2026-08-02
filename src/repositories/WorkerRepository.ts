@@ -97,6 +97,41 @@ export class WorkerRepository {
         }));
     }
 
+    async countRetiredBefore(cutoff: Date): Promise<number> {
+        const result = await this.pool.query<{ count: string }>(
+            `SELECT count(*)::text AS count
+             FROM worker_instances w
+             WHERE w.last_heartbeat_at < $1
+               AND NOT EXISTS (
+                   SELECT 1 FROM executions e
+                   WHERE e.claimed_by_worker_id = w.id AND e.status = 'running'
+               )`,
+            [cutoff]
+        );
+        return Number(result.rows[0]?.count ?? 0);
+    }
+
+    async deleteRetiredBefore(cutoff: Date, limit: number): Promise<string[]> {
+        const result = await this.pool.query<{ id: string }>(
+            `WITH candidates AS (
+                SELECT w.id
+                FROM worker_instances w
+                WHERE w.last_heartbeat_at < $1
+                  AND NOT EXISTS (
+                      SELECT 1 FROM executions e
+                      WHERE e.claimed_by_worker_id = w.id AND e.status = 'running'
+                  )
+                ORDER BY w.last_heartbeat_at, w.id
+                LIMIT $2
+             )
+             DELETE FROM worker_instances w USING candidates
+             WHERE w.id = candidates.id
+             RETURNING w.id`,
+            [cutoff, limit]
+        );
+        return result.rows.map(row => row.id);
+    }
+
     async queues(): Promise<QueueSummary[]> {
         const [executionRows, workers, policies] = await Promise.all([
             this.pool.query<{ name: string; queued: string; running: string }>(
@@ -180,7 +215,9 @@ export class WorkerRepository {
             saturation: policy.maxRunning === null ? null : summary.running / policy.maxRunning,
             oldestQueuedAt: oldestAt?.toISOString() ?? null,
             oldestQueuedAgeMs: oldestAt === null ? null : Math.max(0, Date.now() - oldestAt.getTime()),
-            subscribedWorkers: subscribed.filter(worker => worker.queues.includes(name)),
+            subscribedWorkers: subscribed.filter(worker =>
+                worker.state !== 'offline' && worker.state !== 'stopped' && worker.queues.includes(name)
+            ),
             affectedJobs: jobs.rows,
             recentExecutions: executions.rows.map(row => ({
                 executionId: row.id, jobId: row.job_id, status: row.status, trigger: row.trigger_type,
